@@ -212,6 +212,8 @@ make build    # or: go build -o mailpit-crew ./cmd/mailpit-crew
 make test
 ```
 
+Prebuilt Linux binaries (amd64, arm64) with `SHA256SUMS` are on the [Releases](https://github.com/mddanish/mailpit-crew/releases) page. GitHub Actions runs the tests and a Docker build on every push to `main`, and publishes a release for every `v*` tag.
+
 ## License
 
 MIT. CodeMirror 5 (embedded editor) is MIT licensed, see `internal/web/assets/static/vendor/codemirror/LICENSE`.

@@ -1,0 +1,29 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: test
+        run: make test
+      - name: build binaries
+        run: |
+          make release VERSION=${GITHUB_REF_NAME}
+          cd dist && sha256sum mailpit-crew-linux-* > SHA256SUMS
+      - name: publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "MailPit-Crew $GITHUB_REF_NAME" --generate-notes
