@@ -106,8 +106,13 @@ func (s *Server) accountsEnable(w http.ResponseWriter, r *http.Request, c *reqCt
 	if err == nil {
 		err = s.opts.Manager.Save(apply.KindAuth, path, hf.Bytes(), base)
 	}
+	kv, note := []string{key, path}, ""
+	if key == "MP_SMTP_AUTH_FILE" && s.smtpAuthNeedsInsecure() {
+		kv = append(kv, "MP_SMTP_AUTH_ALLOW_INSECURE", "true")
+		note = " No SMTP TLS certificate is set, so MP_SMTP_AUTH_ALLOW_INSECURE was also turned on: SMTP passwords travel unencrypted until you set MP_SMTP_TLS_CERT and MP_SMTP_TLS_KEY."
+	}
 	if err == nil {
-		err = s.setEnv(key, path)
+		err = s.setEnv(kv...)
 	}
 	if err != nil {
 		s.flash(c, "error", err.Error())
@@ -115,8 +120,21 @@ func (s *Server) accountsEnable(w http.ResponseWriter, r *http.Request, c *reqCt
 		return
 	}
 	s.audit(r, c.user.Username, "enable", key, "ok", "first account "+user)
-	s.accountFlash(c, "Turned on "+key+" with account "+user+". Restart Mailpit to make it active.", generated)
+	s.accountFlash(c, "Turned on "+key+" with account "+user+"."+note+" Restart Mailpit to make it active.", generated)
 	s.redirect(w, r, "admin/accounts/"+apply.FileID(apply.KindAuth, path))
+}
+
+// smtpAuthNeedsInsecure reports whether Mailpit would refuse SMTP logins
+// without TLS: no SMTP certificate, insecure logins not allowed and TLS not
+// required (that case is already reported as a settings error).
+func (s *Server) smtpAuthNeedsInsecure() bool {
+	env, err := s.opts.Manager.Env()
+	if err != nil {
+		return false
+	}
+	m := env.Map()
+	return m["MP_SMTP_TLS_CERT"] == "" && !catalog.IsTrue(m["MP_SMTP_AUTH_ALLOW_INSECURE"]) &&
+		!catalog.IsTrue(m["MP_SMTP_REQUIRE_TLS"]) && !catalog.IsTrue(m["MP_SMTP_REQUIRE_STARTTLS"])
 }
 
 // passwordFrom returns the given password, or a generated one when empty.

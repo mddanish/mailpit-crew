@@ -70,16 +70,18 @@ func (s *Server) saveFile(r *http.Request, c *reqCtx, tk textKind, path string, 
 	return saveResult{}
 }
 
-// setEnv sets or (value "") removes one key in the env file.
-func (s *Server) setEnv(key, value string) error {
+// setEnv sets or (value "") removes key/value pairs in the env file in one save.
+func (s *Server) setEnv(kv ...string) error {
 	env, err := s.opts.Manager.Env()
 	if err != nil {
 		return err
 	}
-	if value == "" {
-		env.Delete(key)
-	} else if err := env.Set(key, value); err != nil {
-		return err
+	for i := 0; i+1 < len(kv); i += 2 {
+		if kv[i+1] == "" {
+			env.Delete(kv[i])
+		} else if err := env.Set(kv[i], kv[i+1]); err != nil {
+			return err
+		}
 	}
 	err = s.opts.Manager.Save(apply.KindEnv, s.opts.Manager.EnvPath(), env.Bytes(), "")
 	var ve *apply.ValidationError

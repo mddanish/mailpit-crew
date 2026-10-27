@@ -349,5 +349,15 @@ func ValidateEnvWith(m map[string]string, pending func(string) bool) []FieldErro
 	if requireTLS && IsTrue(m["MP_SMTP_AUTH_ALLOW_INSECURE"]) {
 		errs = append(errs, FieldError{Key: "MP_SMTP_AUTH_ALLOW_INSECURE", Err: "cannot be used when SMTP TLS is required"})
 	}
+	// Mailpit refuses to start when SMTP logins would go unencrypted.
+	for _, k := range []string{"MP_SMTP_AUTH_FILE", "MP_SMTP_AUTH", "MP_SMTP_AUTH_ACCEPT_ANY"} {
+		if m[k] == "" || k == "MP_SMTP_AUTH_ACCEPT_ANY" && !IsTrue(m[k]) {
+			continue
+		}
+		if m["MP_SMTP_TLS_CERT"] == "" && !IsTrue(m["MP_SMTP_AUTH_ALLOW_INSECURE"]) {
+			errs = append(errs, FieldError{Key: k, Err: "SMTP authentication needs MP_SMTP_TLS_CERT and MP_SMTP_TLS_KEY, or MP_SMTP_AUTH_ALLOW_INSECURE=true"})
+		}
+		break
+	}
 	return errs
 }
