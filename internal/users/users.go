@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/mamber/mailpit-crew/internal/fsutil"
-	"github.com/mamber/mailpit-crew/internal/htpasswd"
+	"github.com/mddanish/mailpit-crew/internal/fsutil"
+	"github.com/mddanish/mailpit-crew/internal/htpasswd"
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 )

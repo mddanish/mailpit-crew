@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mamber/mailpit-crew/internal/htpasswd"
+	"github.com/mddanish/mailpit-crew/internal/htpasswd"
 )
 
 type fakeRestarter struct {

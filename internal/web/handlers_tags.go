@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mamber/mailpit-crew/internal/apply"
-	"github.com/mamber/mailpit-crew/internal/tagsfile"
+	"github.com/mddanish/mailpit-crew/internal/apply"
+	"github.com/mddanish/mailpit-crew/internal/tagsfile"
 )
 
 type tagRow struct {

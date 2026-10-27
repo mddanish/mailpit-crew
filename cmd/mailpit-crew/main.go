@@ -16,14 +16,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mamber/mailpit-crew/internal/apply"
-	"github.com/mamber/mailpit-crew/internal/audit"
-	"github.com/mamber/mailpit-crew/internal/config"
-	"github.com/mamber/mailpit-crew/internal/htpasswd"
-	"github.com/mamber/mailpit-crew/internal/mailpit"
-	"github.com/mamber/mailpit-crew/internal/restart"
-	"github.com/mamber/mailpit-crew/internal/users"
-	"github.com/mamber/mailpit-crew/internal/web"
+	"github.com/mddanish/mailpit-crew/internal/apply"
+	"github.com/mddanish/mailpit-crew/internal/audit"
+	"github.com/mddanish/mailpit-crew/internal/config"
+	"github.com/mddanish/mailpit-crew/internal/htpasswd"
+	"github.com/mddanish/mailpit-crew/internal/mailpit"
+	"github.com/mddanish/mailpit-crew/internal/restart"
+	"github.com/mddanish/mailpit-crew/internal/users"
+	"github.com/mddanish/mailpit-crew/internal/web"
 )
 
 // version is set at build time with -ldflags "-X main.version=..."

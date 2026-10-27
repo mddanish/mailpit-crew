@@ -19,13 +19,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mamber/mailpit-crew/internal/catalog"
-	"github.com/mamber/mailpit-crew/internal/diff"
-	"github.com/mamber/mailpit-crew/internal/envfile"
-	"github.com/mamber/mailpit-crew/internal/fsutil"
-	"github.com/mamber/mailpit-crew/internal/htpasswd"
-	"github.com/mamber/mailpit-crew/internal/restart"
-	"github.com/mamber/mailpit-crew/internal/tagsfile"
+	"github.com/mddanish/mailpit-crew/internal/catalog"
+	"github.com/mddanish/mailpit-crew/internal/diff"
+	"github.com/mddanish/mailpit-crew/internal/envfile"
+	"github.com/mddanish/mailpit-crew/internal/fsutil"
+	"github.com/mddanish/mailpit-crew/internal/htpasswd"
+	"github.com/mddanish/mailpit-crew/internal/restart"
+	"github.com/mddanish/mailpit-crew/internal/tagsfile"
 )
 
 // Kind is the type of a managed file.

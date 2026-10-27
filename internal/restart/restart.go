@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mamber/mailpit-crew/internal/envfile"
+	"github.com/mddanish/mailpit-crew/internal/envfile"
 )
 
 // Restarter starts, restarts and stops Mailpit.

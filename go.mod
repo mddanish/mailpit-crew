@@ -1,4 +1,4 @@
-module github.com/mamber/mailpit-crew
+module github.com/mddanish/mailpit-crew
 
 go 1.24
 

@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mamber/mailpit-crew/internal/apply"
-	"github.com/mamber/mailpit-crew/internal/audit"
-	"github.com/mamber/mailpit-crew/internal/catalog"
-	"github.com/mamber/mailpit-crew/internal/mailpit"
-	"github.com/mamber/mailpit-crew/internal/users"
+	"github.com/mddanish/mailpit-crew/internal/apply"
+	"github.com/mddanish/mailpit-crew/internal/audit"
+	"github.com/mddanish/mailpit-crew/internal/catalog"
+	"github.com/mddanish/mailpit-crew/internal/mailpit"
+	"github.com/mddanish/mailpit-crew/internal/users"
 )
 
 //go:embed assets

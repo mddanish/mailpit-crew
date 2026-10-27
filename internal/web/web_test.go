@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mamber/mailpit-crew/internal/apply"
-	"github.com/mamber/mailpit-crew/internal/htpasswd"
-	"github.com/mamber/mailpit-crew/internal/mailpit"
-	"github.com/mamber/mailpit-crew/internal/users"
+	"github.com/mddanish/mailpit-crew/internal/apply"
+	"github.com/mddanish/mailpit-crew/internal/htpasswd"
+	"github.com/mddanish/mailpit-crew/internal/mailpit"
+	"github.com/mddanish/mailpit-crew/internal/users"
 )
 
 type nopRestarter struct{ calls int }

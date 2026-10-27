@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mamber/mailpit-crew/internal/apply"
-	"github.com/mamber/mailpit-crew/internal/catalog"
-	"github.com/mamber/mailpit-crew/internal/envfile"
-	"github.com/mamber/mailpit-crew/internal/htpasswd"
-	"github.com/mamber/mailpit-crew/internal/mailpit"
+	"github.com/mddanish/mailpit-crew/internal/apply"
+	"github.com/mddanish/mailpit-crew/internal/catalog"
+	"github.com/mddanish/mailpit-crew/internal/envfile"
+	"github.com/mddanish/mailpit-crew/internal/htpasswd"
+	"github.com/mddanish/mailpit-crew/internal/mailpit"
 )
 
 type check struct {
