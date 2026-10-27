@@ -3,31 +3,57 @@ package mailpit
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
+	"sync"
 	"time"
 )
 
 // Client talks to one Mailpit instance.
 type Client struct {
+	mu       sync.RWMutex
 	base     string
 	user     string
 	password string
 	http     *http.Client
 }
 
-// New returns a client. base is the Mailpit URL including any webroot,
-// for example http://127.0.0.1:8026.
+// New returns a client. base is the Mailpit URL, for example
+// http://127.0.0.1:8025.
 func New(base, user, password string) *Client {
-	return &Client{
-		base:     base,
-		user:     user,
-		password: password,
-		http:     &http.Client{Timeout: 10 * time.Second},
-	}
+	c := &Client{user: user, password: password}
+	c.SetBase(base)
+	return c
+}
+
+// SetBase changes the Mailpit URL. For https the certificate is not
+// verified: Crew talks to its own Mailpit, whose certificate is issued for
+// the public host name, not for 127.0.0.1.
+func (c *Client) SetBase(base string) {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // #nosec G402 -- own Mailpit, see above
+	c.mu.Lock()
+	c.base = strings.TrimRight(base, "/")
+	c.http = &http.Client{Timeout: 10 * time.Second, Transport: tr}
+	c.mu.Unlock()
+}
+
+// Base returns the Mailpit URL.
+func (c *Client) Base() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.base
+}
+
+func (c *Client) conn() (string, *http.Client) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.base, c.http
 }
 
 // Info is the subset of /api/v1/info that Crew uses.
@@ -47,14 +73,15 @@ type Info struct {
 }
 
 func (c *Client) get(ctx context.Context, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	base, hc := c.conn()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
 	if err != nil {
 		return err
 	}
 	if c.user != "" {
 		req.SetBasicAuth(c.user, c.password)
 	}
-	resp, err := c.http.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return err
 	}
@@ -125,3 +152,10 @@ func (c *Client) WaitReady(ctx context.Context) error {
 		}
 	}
 }
+
+type statusError struct {
+	code int
+	msg  string
+}
+
+func (e statusError) Error() string { return e.msg }

@@ -87,6 +87,16 @@ func (f *File) Get(key string) (string, bool) {
 	return "", false
 }
 
+// Line returns the 1-based line number of the last assignment of key, or 0.
+func (f *File) Line(key string) int {
+	for i := len(f.lines) - 1; i >= 0; i-- {
+		if f.lines[i].key == key {
+			return i + 1
+		}
+	}
+	return 0
+}
+
 // Keys returns all assigned keys in file order, without duplicates.
 func (f *File) Keys() []string {
 	seen := map[string]bool{}

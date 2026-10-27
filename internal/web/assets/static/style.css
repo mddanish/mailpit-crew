@@ -152,33 +152,46 @@ pre.diff { white-space: normal; }
 .muted-badge { background: var(--code-bg); color: var(--muted); }
 .tag-label { font-size: 12px; color: var(--muted); }
 
-/* inbox */
-h1 .count { font-size: .9rem; font-weight: 400; }
+/* editors */
 .small { font-size: 12px; }
-.card.flush { padding: 0; overflow: hidden; }
-.toolbar { padding: .5rem .75rem; border-bottom: 1px solid var(--border); }
-table.mails td { vertical-align: top; }
-table.mails tr.unread .sender a, table.mails tr.unread .subj > a { font-weight: 700; }
-table.mails td.sel { width: 2rem; }
-table.mails td.sender { width: 28%; overflow-wrap: anywhere; }
-.searchform input.search { width: 22rem; max-width: 100%; }
-table.mails td.meta { width: 7rem; text-align: right; white-space: nowrap; color: var(--muted); }
-table.mails a { color: var(--text); }
-table.mails td.empty { padding: 2rem; text-align: center; }
-.tag { display: inline-block; font-size: 11px; background: var(--code-bg); border-radius: 4px; padding: 0 6px; margin: 2px 4px 0 0; }
-.pager { justify-content: center; gap: 1.5rem; }
-.tabs { display: flex; gap: .25rem; margin-bottom: -1px; flex-wrap: wrap; }
-.tabs a { padding: .4rem .9rem; border: 1px solid transparent; border-radius: 6px 6px 0 0; color: var(--muted); }
-.tabs a.active { background: var(--card); border-color: var(--border); border-bottom-color: var(--card); color: var(--text); }
-.tabs + .card { border-top-left-radius: 0; }
-iframe.mailframe { width: 100%; height: 70vh; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
-pre.mailtext { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
-.wrap { overflow-wrap: anywhere; }
+.flash.warn { background: var(--warn-bg); }
+.flash.notice { border-width: 2px; }
+.flash .row { margin-top: .5rem; }
+.modes { display: flex; gap: .25rem; }
+.modes a { padding: .3rem .8rem; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); }
+.modes a.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+table.kv td.value { overflow-wrap: anywhere; max-width: 32rem; }
+.small-btn { padding: .15rem .55rem; font-size: 13px; }
 a.button { display: inline-block; border: 1px solid var(--accent); border-radius: 6px; padding: .4rem .9rem; }
 a.button.secondary { color: var(--accent); }
-table.rules input:not([type=checkbox]) { width: 100%; }
+a.button.small-btn { padding: .15rem .55rem; font-size: 13px; }
+button.danger-link { color: var(--error); }
+.grow { flex: 1; min-width: 14rem; }
+.keyform select[data-keyselect] { max-width: 100%; }
+.keyform .value-input { min-width: 18rem; max-width: 100%; }
+.keyhelp { margin: .5rem 0 0; }
+.editor-bar { margin-bottom: .5rem; }
+.verify-result.ok { color: var(--ok); }
+.verify-result.error { color: var(--error); }
+.CodeMirror { height: auto; min-height: 22rem; max-height: 70vh; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+.CodeMirror-scroll { min-height: 22rem; max-height: 70vh; }
+.cm-issue-error { background: rgba(220, 38, 38, .18); }
+.cm-issue-warn { background: rgba(217, 119, 6, .16); }
+textarea[data-editor] { min-height: 22rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+ul.issues { list-style: none; padding: 0; margin: .5rem 0 0; }
+ul.issues li { padding: .2rem .5rem; border-left: 3px solid var(--error); margin-bottom: .25rem; font-size: 13px; }
+ul.issues li.warn { border-color: var(--warn); }
+ul.issues li.jump { cursor: pointer; }
 @media (max-width: 700px) {
-  table.mails td.sender { width: auto; }
-  .searchform, .searchform input.search { width: 100%; }
-  table.mails td.meta { width: auto; }
+  .keyform .value-input { min-width: 0; width: 100%; }
+  .modes { margin-bottom: .5rem; }
+}
+.intro { margin-bottom: 1rem; }
+@media (max-width: 700px) {
+  table.kv thead { display: none; }
+  table.kv, table.kv tbody, table.kv tr, table.kv td { display: block; width: 100%; }
+  table.kv tr { border-bottom: 1px solid var(--border); padding: .4rem 0; }
+  table.kv td { border: none; padding: .15rem 0; }
+  table.kv td.value { max-width: none; }
+  table.kv td.row-actions { white-space: normal; }
 }

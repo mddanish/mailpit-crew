@@ -1,54 +1,65 @@
 {{define "content"}}
-<h1>Settings</h1>
-<p class="muted">File: <code>{{.Data.Path}}</code>{{if .Data.Staged}} · <span class="warn">has staged changes</span>{{end}} · <a href="{{.Root}}admin/settings/raw">Edit as text</a></p>
-{{if not .Data.Writable}}<div class="flash error">This file is outside the managed directories. Crew cannot change it.</div>{{end}}
-{{range .Data.Errors}}<div class="flash error">{{.}}</div>{{end}}
-<p class="muted">Empty fields are removed from the file and Mailpit uses its default. Changes are staged; nothing is written until you apply them.</p>
+{{$d := .Data}}
+<div class="row spread">
+  <h1>Settings</h1>
+  <nav class="modes">
+    <a href="{{.Root}}admin/settings" {{if eq $d.Mode "form"}}class="active"{{end}}>Form</a>
+    <a href="{{.Root}}admin/settings?mode=full" {{if eq $d.Mode "full"}}class="active"{{end}}>Full editor</a>
+  </nav>
+</div>
+<p class="muted">File: <code>{{$d.Path}}</code></p>
 
-<form method="post" action="{{.Root}}admin/settings">
-  <input type="hidden" name="csrf" value="{{.CSRF}}">
-  {{range .Data.Sections}}
-  <details class="card" {{if .HasSet}}open{{end}}>
-    <summary><h2>{{.Name}}</h2></summary>
-    {{range .Fields}}
-    <div class="field {{if .Error}}has-error{{end}}">
-      <div class="label">
-        <code>{{.Key.Name}}</code>
-        <span class="muted">{{.Key.Desc}}{{if .Key.Default}} (default {{.Key.Default}}){{end}}</span>
-      </div>
-      <div class="input">
-        {{if .Locked}}
-          <code>{{if .Value}}{{.Value}}{{else}}(not set){{end}}</code> <span class="badge muted-badge">managed by Crew</span>
-        {{else if eq .Key.Kind "bool"}}
-          <label class="check"><input type="checkbox" name="{{.Key.Name}}" {{if istrue .Value}}checked{{end}}> enabled</label>
-        {{else if .Key.Sensitive}}
-          <input type="password" name="{{.Key.Name}}" autocomplete="new-password" placeholder="{{if .Set}}set (leave empty to keep){{else}}not set{{end}}">
-          {{if .Set}}<label class="check"><input type="checkbox" name="clear_{{.Key.Name}}"> remove</label>{{end}}
-        {{else if eq .Key.Kind "enum"}}
-          <select name="{{.Key.Name}}">
-            <option value="">(not set)</option>
-            {{$v := .Value}}{{range .Key.Options}}<option value="{{.}}" {{if eq . $v}}selected{{end}}>{{.}}</option>{{end}}
-          </select>
+{{if eq $d.Mode "full"}}
+{{template "editor" .}}
+{{else}}
+<section class="card">
+  <h2>In the file</h2>
+  <table class="kv">
+    <thead><tr><th>Setting</th><th>Value</th><th></th></tr></thead>
+    <tbody>
+    {{range $d.Rows}}
+    <tr>
+      <td><code>{{.Key}}</code><div class="muted small">{{if .Unknown}}not a setting Crew knows{{else}}{{.Desc}}{{end}}</div></td>
+      <td class="value"><code>{{.Value}}</code></td>
+      <td class="row-actions">
+        {{if .Locked}}<span class="badge muted-badge">managed by Crew</span>
         {{else}}
-          <input name="{{.Key.Name}}" value="{{.Value}}" {{if eq .Key.Kind "int"}}inputmode="numeric"{{end}}>
+        {{if not .Unknown}}<a class="button secondary small-btn" href="{{$.Root}}admin/settings?key={{.Key}}#change">Change</a>{{end}}
+        <form method="post" action="{{$.Root}}admin/settings/delete" class="inline" data-confirm="Remove {{.Key}}? Mailpit uses its default then.">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
+          <input type="hidden" name="base" value="{{$d.Base}}">
+          <input type="hidden" name="key" value="{{.Key}}">
+          <button type="submit" class="danger small-btn">Delete</button>
+        </form>
         {{end}}
-        {{with .Error}}<div class="error">{{.}}</div>{{end}}
-      </div>
-    </div>
+      </td>
+    </tr>
+    {{else}}
+    <tr><td colspan="3" class="muted">No settings.</td></tr>
     {{end}}
-  </details>
-  {{end}}
+    </tbody>
+  </table>
+</section>
 
-  {{if .Data.Other}}
-  <section class="card">
-    <h2>Other</h2>
-    <p class="muted">Keys Crew does not know. They are kept as they are. Use "Edit as text" to change them.</p>
-    {{range .Data.Other}}<div><code>{{.Key.Name}}={{.Value}}</code></div>{{end}}
-  </section>
-  {{end}}
-
-  <div class="actions sticky">
-    <button type="submit" {{if not .Data.Writable}}disabled{{end}}>Stage changes</button>
-  </div>
-</form>
+<section class="card" id="change">
+  <h2>Add or change a setting</h2>
+  <form method="post" action="{{.Root}}admin/settings/set" class="keyform">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="base" value="{{$d.Base}}">
+    <div class="row">
+      <select name="key" data-keyselect required>
+        <option value="">Choose a setting…</option>
+        {{range $d.Groups}}
+        <optgroup label="{{.Section}}">
+          {{range .Keys}}<option value="{{.Name}}" data-meta="{{json .}}" {{if eq .Name $d.Select}}selected{{end}}>{{.Name}}</option>{{end}}
+        </optgroup>
+        {{end}}
+      </select>
+      <span data-valuebox><input name="value" placeholder="value" class="value-input"></span>
+      <button type="submit">Save</button>
+    </div>
+    <p class="muted small keyhelp" data-keyhelp>Choose a setting to see what it does and an example.</p>
+  </form>
+</section>
+{{end}}
 {{end}}

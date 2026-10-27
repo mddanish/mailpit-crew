@@ -2,6 +2,8 @@ package web
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,83 +18,77 @@ import (
 	"time"
 
 	"github.com/mddanish/mailpit-crew/internal/apply"
-	"github.com/mddanish/mailpit-crew/internal/htpasswd"
-	"github.com/mddanish/mailpit-crew/internal/inbox"
 	"github.com/mddanish/mailpit-crew/internal/mailpit"
+	"github.com/mddanish/mailpit-crew/internal/managed"
 	"github.com/mddanish/mailpit-crew/internal/users"
 )
 
-type nopRestarter struct{ calls int }
-
-func (n *nopRestarter) Mode() string                  { return "command" }
-func (n *nopRestarter) Start() error                  { return nil }
-func (n *nopRestarter) Stop(context.Context) error    { return nil }
-func (n *nopRestarter) LogTail() []string             { return nil }
-func (n *nopRestarter) Restart(context.Context) error { n.calls++; return nil }
-
-type env struct {
-	dir    string
-	srv    *httptest.Server
-	client *http.Client
-	rs     *nopRestarter
-	store  *users.Store
+type fakeRestarter struct {
+	calls int
+	fail  bool
 }
 
-func newJar() http.CookieJar {
-	jar, _ := cookiejar.New(nil)
-	return jar
+func (f *fakeRestarter) Start() error               { return nil }
+func (f *fakeRestarter) Stop(context.Context) error { return nil }
+func (f *fakeRestarter) LogTail() []string          { return []string{"mailpit log line"} }
+func (f *fakeRestarter) Restart(context.Context) error {
+	f.calls++
+	if f.fail {
+		return errors.New("bind: address already in use")
+	}
+	return nil
+}
+
+type env struct {
+	layout managed.Layout
+	srv    *httptest.Server
+	client *http.Client
+	rs     *fakeRestarter
+	mgr    *apply.Manager
 }
 
 func newEnv(t *testing.T) *env {
-	return newEnvWith(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	t.Helper()
+	home := t.TempDir()
+	layout := managed.NewLayout(filepath.Join(home, "mailpit"), filepath.Join(home, "data"))
+	st, err := managed.LoadState(layout.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := layout.Ensure(st); err != nil {
+		t.Fatal(err)
+	}
+	fakeMailpit := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/readyz":
 		case "/api/v1/info":
-			io.WriteString(w, `{"Version":"v1.28.0","Messages":3,"RuntimeStats":{"Uptime":3600}}`)
+			io.WriteString(w, `{"Version":"v1.32.0","Messages":3,"RuntimeStats":{"Uptime":3600}}`)
 		case "/api/v1/search":
 			io.WriteString(w, `{"messages_count":2}`)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
-}
-
-func newEnvWith(t *testing.T, mailpitAPI http.Handler) *env {
-	t.Helper()
-	dir := t.TempDir()
-	h, _ := htpasswd.HashPassword("crew-password")
-	os.WriteFile(filepath.Join(dir, "users.auth"), []byte("crew:"+h+"\n"), 0o600)
-	os.WriteFile(filepath.Join(dir, "smtp.auth"), []byte("gitea:"+h+"\n"), 0o600)
-	os.WriteFile(filepath.Join(dir, "mailpit.ini"), []byte(
-		"MP_DATABASE="+filepath.Join(dir, "mailpit.db")+"\n"+
-			"MP_UI_AUTH_FILE="+filepath.Join(dir, "users.auth")+"\n"+
-			"MP_SMTP_AUTH_FILE="+filepath.Join(dir, "smtp.auth")+"\n"), 0o644)
-
-	fakeMailpit := httptest.NewServer(mailpitAPI)
 	t.Cleanup(fakeMailpit.Close)
-	mp := mailpit.New(fakeMailpit.URL, "crew", "crew-password")
-
-	store, err := users.Open(filepath.Join(dir, "crew-users.yaml"))
-	if err != nil {
+	mp := mailpit.New(fakeMailpit.URL, st.APIUser, st.APIPassword)
+	store, _ := users.Open(filepath.Join(layout.Data, "users.yaml"))
+	if err := store.SetPassword(users.AdminName, "admin-password"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Add("admin", "admin-password", users.RoleAdmin); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Add("dev", "dev-password", users.RoleUser); err != nil {
-		t.Fatal(err)
-	}
-	rs := &nopRestarter{}
+	rs := &fakeRestarter{}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mgr := apply.New(apply.Options{
-		EnvFile: filepath.Join(dir, "mailpit.ini"), ManagedDirs: []string{dir},
-		BackupDir: filepath.Join(dir, "backups"), Restarter: rs, Ready: mp,
-		Timeout: 5 * time.Second, StableFor: 10 * time.Millisecond, ServiceUser: "crew", Log: log,
+		EnvFile: layout.EnvFile, ManagedDir: layout.Dir, BackupDir: layout.Backups, ActiveDir: layout.Active,
+		Restarter: rs, Ready: mp, Timeout: 5 * time.Second, StableFor: 10 * time.Millisecond,
+		ServiceUser: st.APIUser, Locked: layout.Locked(), Log: log,
 	})
+	if err := mgr.SnapshotActive(); err != nil {
+		t.Fatal(err)
+	}
+	svc := &managed.Service{Layout: layout, Manager: mgr, Script: nil, Log: log, Releases: &managed.Releases{APIURL: fakeMailpit.URL + "/none"}}
 	s, err := New(Options{
-		Webroot: "/", SessionTTL: time.Hour, ApplyTimeout: 5 * time.Second, Version: "test",
-		RestartMode: "command", Users: store, Manager: mgr, Mailpit: mp, Log: log,
-		Inbox: &inbox.Inbox{Client: mp},
+		Webroot: "/", SessionTTL: time.Hour, Version: "test", CrewPort: "8080",
+		Users: store, Manager: mgr, Mailpit: mp, Managed: svc, Log: log,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -101,17 +97,7 @@ func newEnvWith(t *testing.T, mailpitAPI http.Handler) *env {
 	t.Cleanup(ts.Close)
 	jar, _ := cookiejar.New(nil)
 	c := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return &env{dir: dir, srv: ts, client: c, rs: rs, store: store}
-}
-
-func (e *env) login(t *testing.T, user, pw string) *http.Response {
-	t.Helper()
-	resp, err := e.client.PostForm(e.srv.URL+"/login", url.Values{"username": {user}, "password": {pw}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	return resp
+	return &env{layout: layout, srv: ts, client: c, rs: rs, mgr: mgr}
 }
 
 func (e *env) get(t *testing.T, path string) (int, string) {
@@ -125,17 +111,6 @@ func (e *env) get(t *testing.T, path string) (int, string) {
 	return resp.StatusCode, string(b)
 }
 
-var csrfRe = regexp.MustCompile(`name="csrf" value="([^"]+)"`)
-
-func (e *env) csrf(t *testing.T) string {
-	_, body := e.get(t, "/admin")
-	m := csrfRe.FindStringSubmatch(body)
-	if m == nil {
-		t.Fatal("no csrf token on page")
-	}
-	return m[1]
-}
-
 func (e *env) post(t *testing.T, path string, v url.Values) (int, string) {
 	t.Helper()
 	resp, err := e.client.PostForm(e.srv.URL+path, v)
@@ -147,182 +122,208 @@ func (e *env) post(t *testing.T, path string, v url.Values) (int, string) {
 	return resp.StatusCode, string(b)
 }
 
-func TestLoginRequired(t *testing.T) {
-	e := newEnv(t)
-	code, _ := e.get(t, "/admin/settings")
+var (
+	csrfRe = regexp.MustCompile(`name="csrf" value="([^"]+)"`)
+	baseRe = regexp.MustCompile(`name="base" value="([^"]*)"`)
+)
+
+func (e *env) login(t *testing.T) string {
+	t.Helper()
+	code, _ := e.post(t, "/login", url.Values{"username": {"admin"}, "password": {"admin-password"}})
 	if code != http.StatusSeeOther {
-		t.Fatalf("want redirect to login, got %d", code)
+		t.Fatalf("login: %d", code)
+	}
+	_, body := e.get(t, "/admin")
+	return csrfRe.FindStringSubmatch(body)[1]
+}
+
+func (e *env) base(t *testing.T, page string) string {
+	_, body := e.get(t, page)
+	m := baseRe.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("no base on %s", page)
+	}
+	return m[1]
+}
+
+func read(t *testing.T, p string) string {
+	b, _ := os.ReadFile(p)
+	return string(b)
+}
+
+func TestLoginAndCSRF(t *testing.T) {
+	e := newEnv(t)
+	if code, _ := e.get(t, "/admin/settings"); code != http.StatusSeeOther {
+		t.Fatal("not logged in should redirect")
+	}
+	if code, _ := e.post(t, "/login", url.Values{"username": {"admin"}, "password": {"wrong"}}); code != http.StatusUnauthorized {
+		t.Fatal("wrong password accepted")
+	}
+	e.login(t)
+	if code, _ := e.post(t, "/admin/restart", url.Values{}); code != http.StatusForbidden {
+		t.Fatal("POST without CSRF accepted")
+	}
+	_, body := e.get(t, "/admin")
+	if !strings.Contains(body, "v1.32.0") || !strings.Contains(body, "SMTP accepts mail without login") {
+		t.Fatalf("dashboard:\n%s", body)
 	}
 }
 
-func TestLoginAndDashboard(t *testing.T) {
+func TestSettingsSaveThenRestart(t *testing.T) {
 	e := newEnv(t)
-	if r := e.login(t, "admin", "wrong"); r.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("wrong password: %d", r.StatusCode)
+	tok := e.login(t)
+	e.post(t, "/admin/settings/set", url.Values{"csrf": {tok}, "base": {e.base(t, "/admin/settings")}, "key": {"MP_MAX_AGE"}, "value": {"30d"}})
+	if !strings.Contains(read(t, e.layout.EnvFile), "MP_MAX_AGE=30d") || e.rs.calls != 0 {
+		t.Fatal("not saved, or restarted on save")
 	}
-	if r := e.login(t, "admin", "admin-password"); r.StatusCode != http.StatusSeeOther {
-		t.Fatalf("login: %d", r.StatusCode)
+	_, body := e.get(t, "/admin/settings")
+	if !strings.Contains(body, "but not active") {
+		t.Fatal("no pending banner")
 	}
-	code, body := e.get(t, "/admin")
-	if code != 200 || !strings.Contains(body, "v1.28.0") {
-		t.Fatalf("dashboard %d: %s", code, body)
+	_, body = e.get(t, "/admin/pending")
+	if !strings.Contains(body, "&#43; MP_MAX_AGE=30d") {
+		t.Fatalf("pending diff:\n%s", body)
 	}
-	if !strings.Contains(body, "Mailpit UI is reachable from the network") {
-		t.Fatal("missing bind address warning")
+	e.post(t, "/admin/restart", url.Values{"csrf": {tok}})
+	if e.rs.calls != 1 || e.mgr.PendingCount() != 0 {
+		t.Fatalf("restart calls %d pending %d", e.rs.calls, e.mgr.PendingCount())
+	}
+	// locked and invalid values
+	e.post(t, "/admin/settings/set", url.Values{"csrf": {tok}, "base": {e.base(t, "/admin/settings")}, "key": {"MP_DATABASE"}, "value": {"/x.db"}})
+	e.post(t, "/admin/settings/set", url.Values{"csrf": {tok}, "base": {e.base(t, "/admin/settings")}, "key": {"MP_MAX_AGE"}, "value": {"forever"}})
+	if strings.Contains(read(t, e.layout.EnvFile), "/x.db") || strings.Contains(read(t, e.layout.EnvFile), "forever") {
+		t.Fatal("locked or invalid value saved")
+	}
+	// delete
+	e.post(t, "/admin/settings/delete", url.Values{"csrf": {tok}, "base": {e.base(t, "/admin/settings")}, "key": {"MP_MAX_AGE"}})
+	if strings.Contains(read(t, e.layout.EnvFile), "MP_MAX_AGE") {
+		t.Fatal("delete did not remove the key")
 	}
 }
 
-func TestNonAdminCannotOpenAdmin(t *testing.T) {
+func TestFullEditorKeepsTextOnError(t *testing.T) {
 	e := newEnv(t)
-	if r := e.login(t, "dev", "dev-password"); r.StatusCode != http.StatusSeeOther {
-		t.Fatalf("user login: %d", r.StatusCode)
+	tok := e.login(t)
+	before := read(t, e.layout.EnvFile)
+	code, body := e.post(t, "/admin/edit/env", url.Values{"csrf": {tok}, "base": {e.base(t, "/admin/settings?mode=full")}, "content": {before + "MP_MAX_AGE=forever\nbroken line\n"}})
+	if code != http.StatusBadRequest || !strings.Contains(body, "broken line") || !strings.Contains(body, "not a KEY=value") {
+		t.Fatalf("code %d", code)
 	}
-	if code, _ := e.get(t, "/admin/settings"); code != http.StatusForbidden {
-		t.Fatalf("user opened admin page: %d", code)
+	if read(t, e.layout.EnvFile) != before {
+		t.Fatal("invalid text saved")
 	}
-	if code, _ := e.get(t, "/admin/users"); code != http.StatusForbidden {
-		t.Fatalf("user opened users page: %d", code)
-	}
-}
-
-func TestLoginRateLimit(t *testing.T) {
-	e := newEnv(t)
-	for i := 0; i < 5; i++ {
-		e.login(t, "admin", "wrong")
-	}
-	if r := e.login(t, "admin", "admin-password"); r.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("not blocked after 5 failures: %d", r.StatusCode)
-	}
-}
-
-func TestCSRFRequired(t *testing.T) {
-	e := newEnv(t)
-	e.login(t, "admin", "admin-password")
-	code, _ := e.post(t, "/admin/settings", url.Values{"MP_LABEL": {"x"}})
-	if code != http.StatusForbidden {
-		t.Fatalf("post without csrf: %d", code)
-	}
-}
-
-func TestSettingsStageAndApply(t *testing.T) {
-	e := newEnv(t)
-	e.login(t, "admin", "admin-password")
-	tok := e.csrf(t)
-	before, _ := os.ReadFile(filepath.Join(e.dir, "mailpit.ini"))
-
-	form := url.Values{"csrf": {tok},
-		"MP_DATABASE":       {filepath.Join(e.dir, "mailpit.db")},
-		"MP_UI_AUTH_FILE":   {filepath.Join(e.dir, "users.auth")},
-		"MP_SMTP_AUTH_FILE": {filepath.Join(e.dir, "smtp.auth")},
-		"MP_MAX_AGE":        {"forever"},
-	}
-	code, body := e.post(t, "/admin/settings", form)
-	if code != http.StatusBadRequest || !strings.Contains(body, "must be a number followed by h or d") {
-		t.Fatalf("invalid value: %d", code)
-	}
-
-	form.Set("MP_MAX_AGE", "30d")
-	form.Set("MP_TAGS_USERNAME", "on")
-	if code, _ := e.post(t, "/admin/settings", form); code != http.StatusSeeOther {
-		t.Fatalf("stage: %d", code)
-	}
-	if after, _ := os.ReadFile(filepath.Join(e.dir, "mailpit.ini")); string(after) != string(before) {
-		t.Fatal("file written before apply")
-	}
-	_, body = e.get(t, "/admin/changes")
-	if !strings.Contains(body, "&#43; MP_MAX_AGE=30d") || !strings.Contains(body, "&#43; MP_TAGS_USERNAME=true") {
-		t.Fatalf("diff missing:\n%s", body)
-	}
-
-	if code, _ := e.post(t, "/admin/apply", url.Values{"csrf": {tok}}); code != http.StatusSeeOther {
-		t.Fatalf("apply: %d", code)
-	}
-	after, _ := os.ReadFile(filepath.Join(e.dir, "mailpit.ini"))
-	if !strings.Contains(string(after), "MP_MAX_AGE=30d") || e.rs.calls != 1 {
-		t.Fatalf("not applied (restarts %d):\n%s", e.rs.calls, after)
-	}
-}
-
-func TestAccountsAddAndProtect(t *testing.T) {
-	e := newEnv(t)
-	e.login(t, "admin", "admin-password")
-	tok := e.csrf(t)
-	_, body := e.get(t, "/admin/accounts")
-	ids := regexp.MustCompile(`/admin/accounts/(auth-[0-9a-f]+)`).FindAllStringSubmatch(body, -1)
-	if len(ids) != 2 {
-		t.Fatalf("auth files: %v", ids)
-	}
-	var uiID, smtpID string
-	for _, m := range ids {
-		_, page := e.get(t, "/admin/accounts/"+m[1])
-		if strings.Contains(page, "Crew service account") {
-			uiID = m[1]
-		} else {
-			smtpID = m[1]
+	_, vbody := e.post(t, "/admin/verify/tags", url.Values{"csrf": {tok}, "content": {"filters:\n  - match: x\n"}})
+	var res struct {
+		OK     bool
+		Issues []struct {
+			Line int
+			Msg  string
 		}
 	}
-	code, _ := e.post(t, "/admin/accounts/"+uiID+"/delete", url.Values{"csrf": {tok}, "username": {"crew"}})
-	if code != http.StatusSeeOther || e.get2(t, "/admin/changes", "No staged changes") == false {
-		t.Fatal("service account delete was staged")
-	}
-	e.post(t, "/admin/accounts/"+smtpID+"/add", url.Values{"csrf": {tok}, "username": {"vaultwarden"}})
-	_, page := e.get(t, "/admin/accounts/"+smtpID)
-	if !strings.Contains(page, "Generated password") || !strings.Contains(page, "vaultwarden") {
-		t.Fatalf("add with generated password:\n%s", page)
+	json.Unmarshal([]byte(vbody), &res)
+	if res.OK || len(res.Issues) == 0 || res.Issues[0].Line != 2 {
+		t.Fatalf("verify: %s", vbody)
 	}
 }
 
-func (e *env) get2(t *testing.T, path, want string) bool {
-	_, body := e.get(t, path)
-	return strings.Contains(body, want)
-}
-
-func TestTagsStage(t *testing.T) {
+func TestTagsForm(t *testing.T) {
 	e := newEnv(t)
-	tags := filepath.Join(e.dir, "tags.yaml")
-	ini := filepath.Join(e.dir, "mailpit.ini")
-	data, _ := os.ReadFile(ini)
-	os.WriteFile(ini, append(data, []byte("MP_TAGS_CONFIG="+tags+"\n")...), 0o644)
-	e.login(t, "admin", "admin-password")
-	tok := e.csrf(t)
-	_, body := e.get(t, "/admin/tags")
-	if !strings.Contains(body, "does not exist yet") {
-		t.Fatal("missing-file notice")
+	tok := e.login(t)
+	for _, r := range [][2]string{{"from:a@x.y", "A"}, {"from:b@x.y", "B"}} {
+		e.post(t, "/admin/file/tags/set", url.Values{"csrf": {tok}, "base": {e.base(t, "/admin/file/tags")}, "match": {r[0]}, "tags": {r[1]}})
 	}
-	code, _ := e.post(t, "/admin/tags", url.Values{"csrf": {tok}, "rows": {"2"},
-		"match_0": {"from:git@example.com"}, "tags_0": {"Gitea"}, "pos_0": {"2"},
-		"match_1": {"from:vault@example.com"}, "tags_1": {"Vault"}, "pos_1": {"1"}})
-	if code != http.StatusSeeOther {
-		t.Fatalf("stage tags: %d", code)
+	e.post(t, "/admin/file/tags/move", url.Values{"csrf": {tok}, "base": {e.base(t, "/admin/file/tags")}, "index": {"1"}, "dir": {"up"}})
+	tags := read(t, e.layout.Tags)
+	if strings.Index(tags, "b@x.y") > strings.Index(tags, "a@x.y") {
+		t.Fatalf("move:\n%s", tags)
 	}
-	if code, _ := e.post(t, "/admin/apply", url.Values{"csrf": {tok}}); code != http.StatusSeeOther {
-		t.Fatalf("apply: %d", code)
+	e.post(t, "/admin/file/tags/delete", url.Values{"csrf": {tok}, "base": {e.base(t, "/admin/file/tags")}, "index": {"0"}})
+	if strings.Contains(read(t, e.layout.Tags), "b@x.y") {
+		t.Fatal("delete")
 	}
-	out, err := os.ReadFile(tags)
-	if err != nil {
-		t.Fatal("tags file not created")
-	}
-	if !strings.HasPrefix(string(out), "filters:\n    - match: from:vault@example.com") {
-		t.Fatalf("order not applied:\n%s", out)
-	}
-	code, body = e.get(t, "/admin/tags/test?q=from:x")
-	if code != 200 || !strings.Contains(body, `"count":2`) {
-		t.Fatalf("test endpoint: %s", body)
+	if _, body := e.get(t, "/admin/file/tags/test?q=from:a"); !strings.Contains(body, `"count":2`) {
+		t.Fatalf("test: %s", body)
 	}
 }
 
-func TestRawEditorMasksSecrets(t *testing.T) {
+func TestRelayEnableAndSecrets(t *testing.T) {
 	e := newEnv(t)
-	ini := filepath.Join(e.dir, "mailpit.ini")
-	data, _ := os.ReadFile(ini)
-	os.WriteFile(ini, append(data, []byte("MP_SMTP_RELAY_PASSWORD=hunter2\n")...), 0o644)
-	e.login(t, "admin", "admin-password")
-	_, body := e.get(t, "/admin/settings/raw")
+	tok := e.login(t)
+	relay := e.layout.StandardFile("MP_SMTP_RELAY_CONFIG")
+	e.post(t, "/admin/file/relay/set", url.Values{"csrf": {tok}, "base": {e.base(t, "/admin/file/relay")}, "key": {"port"}, "value": {"587"}})
+	if _, err := os.Stat(relay); err == nil {
+		t.Fatal("relay without host saved")
+	}
+	e.post(t, "/admin/file/relay/set", url.Values{"csrf": {tok}, "base": {e.base(t, "/admin/file/relay")}, "key": {"host"}, "value": {"smtp.example.com"}})
+	if !strings.Contains(read(t, e.layout.EnvFile), "MP_SMTP_RELAY_CONFIG="+relay) {
+		t.Fatal("relay not turned on")
+	}
+	content := "host: smtp.example.com\nauth: plain\nusername: u\npassword: hunter2\n"
+	e.post(t, "/admin/edit/relay", url.Values{"csrf": {tok}, "base": {e.base(t, "/admin/file/relay?mode=full")}, "content": {content}})
+	if !strings.Contains(read(t, relay), "hunter2") {
+		t.Fatal("full editor save")
+	}
+	_, body := e.get(t, "/admin/file/relay?mode=full")
 	if strings.Contains(body, "hunter2") || !strings.Contains(body, secretPlaceholder) {
-		t.Fatal("secret shown in raw editor")
+		t.Fatal("password shown in editor")
 	}
-	_, body = e.get(t, "/admin/settings")
-	if strings.Contains(body, "hunter2") {
-		t.Fatal("secret shown in settings form")
+	_, form := e.get(t, "/admin/file/relay")
+	if strings.Contains(form, "hunter2") {
+		t.Fatal("password shown in form")
+	}
+	masked := strings.Replace(content, "hunter2", secretPlaceholder, 1) + "port: 2525\n"
+	e.post(t, "/admin/edit/relay", url.Values{"csrf": {tok}, "base": {e.base(t, "/admin/file/relay?mode=full")}, "content": {masked}})
+	if r := read(t, relay); !strings.Contains(r, "password: hunter2") || !strings.Contains(r, "port: 2525") {
+		t.Fatalf("placeholder not restored:\n%s", r)
+	}
+	e.post(t, "/admin/file/relay/disable", url.Values{"csrf": {tok}})
+	if strings.Contains(read(t, e.layout.EnvFile), "MP_SMTP_RELAY_CONFIG") {
+		t.Fatal("disable")
+	}
+}
+
+func TestAccounts(t *testing.T) {
+	e := newEnv(t)
+	tok := e.login(t)
+	e.post(t, "/admin/accounts/enable", url.Values{"csrf": {tok}, "key": {"MP_SMTP_AUTH_FILE"}, "username": {"gitea"}})
+	smtp := e.layout.StandardFile("MP_SMTP_AUTH_FILE")
+	if !strings.HasPrefix(read(t, smtp), "gitea:$2a$") || !strings.Contains(read(t, e.layout.EnvFile), "MP_SMTP_AUTH_FILE=") {
+		t.Fatal("enable")
+	}
+	uiID := apply.FileID(apply.KindAuth, e.layout.UIAuth)
+	_, page := e.get(t, "/admin/accounts/"+uiID)
+	if strings.Contains(page, "<strong>crew</strong>") || !strings.Contains(page, "hidden here") {
+		t.Fatal("service account shown")
+	}
+	for _, action := range []string{"add", "reset", "delete"} {
+		e.post(t, "/admin/accounts/"+uiID+"/"+action, url.Values{"csrf": {tok}, "base": {e.base(t, "/admin/accounts/"+uiID)}, "username": {"crew"}, "password": {"stolen-password"}})
+	}
+	if !strings.Contains(read(t, e.layout.UIAuth), "crew:") || e.mgr.Validate() != nil {
+		t.Fatal("service account changed")
+	}
+	e.post(t, "/admin/accounts/"+uiID+"/add", url.Values{"csrf": {tok}, "base": {e.base(t, "/admin/accounts/"+uiID)}, "username": {"mamber"}, "password": {"mamber-password"}})
+	if !strings.Contains(read(t, e.layout.UIAuth), "mamber:") {
+		t.Fatal("add UI account")
+	}
+}
+
+func TestFailedRestartAndRollback(t *testing.T) {
+	e := newEnv(t)
+	tok := e.login(t)
+	before := read(t, e.layout.EnvFile)
+	e.post(t, "/admin/settings/set", url.Values{"csrf": {tok}, "base": {e.base(t, "/admin/settings")}, "key": {"MP_LABEL"}, "value": {"breaks"}})
+	e.rs.fail = true
+	e.post(t, "/admin/restart", url.Values{"csrf": {tok}})
+	_, body := e.get(t, "/admin")
+	if !strings.Contains(body, "did not start after the last restart") || !strings.Contains(body, "address already in use") || !strings.Contains(body, "mailpit log line") {
+		t.Fatalf("failure banner:\n%s", body)
+	}
+	if !strings.Contains(read(t, e.layout.EnvFile), "breaks") {
+		t.Fatal("rolled back without asking")
+	}
+	e.rs.fail = false
+	e.post(t, "/admin/rollback", url.Values{"csrf": {tok}})
+	if read(t, e.layout.EnvFile) != before || e.mgr.Failure() != nil {
+		t.Fatal("rollback")
 	}
 }

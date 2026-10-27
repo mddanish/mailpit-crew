@@ -21,7 +21,6 @@ import (
 	"github.com/mddanish/mailpit-crew/internal/envfile"
 	"github.com/mddanish/mailpit-crew/internal/htpasswd"
 	"github.com/mddanish/mailpit-crew/internal/restart"
-	"github.com/mddanish/mailpit-crew/internal/users"
 )
 
 // fakeMailpit is a shell script that behaves like Mailpit for ctl.sh:
@@ -174,15 +173,15 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.Ensure("127.0.0.1:18999", st); err != nil {
+	if _, err := l.Ensure(st); err != nil {
 		t.Fatal(err)
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	script := &restart.Script{Path: l.Ctl, LogFile: l.Log, Log: log}
 	mgr := apply.New(apply.Options{
-		EnvFile: l.EnvFile, ManagedDirs: []string{l.Dir}, BackupDir: filepath.Join(l.Data, "backups"),
+		EnvFile: l.EnvFile, ManagedDir: l.Dir, BackupDir: l.Backups, ActiveDir: l.Active,
 		Restarter: script, Ready: alwaysReady{script}, Timeout: 10 * time.Second, StableFor: 300 * time.Millisecond,
-		ServiceUser: st.APIUser, Locked: l.Locked("127.0.0.1:18999"), Log: log,
+		ServiceUser: st.APIUser, Locked: l.Locked(), Log: log,
 	})
 	gh := fakeGitHub(t)
 	svc := &Service{Layout: l, Script: script, Manager: mgr, Log: log,
@@ -204,7 +203,7 @@ func TestEnsureCreatesLayout(t *testing.T) {
 	}
 	data, _ := os.ReadFile(e.l.EnvFile)
 	ef := envfile.Parse(data)
-	if v, _ := ef.Get("MP_UI_BIND_ADDR"); v != "127.0.0.1:18999" {
+	if v, _ := ef.Get("MP_UI_BIND_ADDR"); v != DefaultUIAddr {
 		t.Fatalf("bind addr %q", v)
 	}
 	if probs := e.svc.Manager.Validate(); len(probs) > 0 {
@@ -212,7 +211,7 @@ func TestEnsureCreatesLayout(t *testing.T) {
 	}
 	// service account repaired when its password changes
 	e.st.APIPassword = "rotated-password"
-	if notes, _ := e.l.Ensure("127.0.0.1:18999", e.st); len(notes) != 1 {
+	if notes, _ := e.l.Ensure(e.st); len(notes) != 1 {
 		t.Fatalf("service account not updated: %v", notes)
 	}
 	auth, _ := os.ReadFile(e.l.UIAuth)
@@ -224,14 +223,14 @@ func TestEnsureCreatesLayout(t *testing.T) {
 func TestCtlUpgrade(t *testing.T) {
 	e := newEnv(t)
 	os.WriteFile(e.l.Ctl, []byte("#!/bin/sh\n# my local edit\n"), 0o750)
-	notes, err := e.l.Ensure("127.0.0.1:18999", e.st)
+	notes, err := e.l.Ensure(e.st)
 	if err != nil || len(notes) != 1 || !strings.Contains(notes[0], "updated") {
 		t.Fatalf("notes %v err %v", notes, err)
 	}
 	if old, _ := os.ReadFile(e.l.Ctl + ".old"); !strings.Contains(string(old), "my local edit") {
 		t.Fatal("old script not kept")
 	}
-	if notes, _ := e.l.Ensure("127.0.0.1:18999", e.st); len(notes) != 0 {
+	if notes, _ := e.l.Ensure(e.st); len(notes) != 0 {
 		t.Fatalf("current script replaced again: %v", notes)
 	}
 }
@@ -240,9 +239,9 @@ func TestRepairLocked(t *testing.T) {
 	e := newEnv(t)
 	data, _ := os.ReadFile(e.l.EnvFile)
 	ef := envfile.Parse(data)
-	ef.Set("MP_UI_BIND_ADDR", "0.0.0.0:8025")
-	ef.Set("MP_UI_TLS_CERT", "/x.pem")
-	ef.Delete("MP_TAGS_USERNAME")
+	ef.Set("MP_DATABASE", "/elsewhere/mailpit.db")
+	ef.Set("MP_WEBROOT", "/mail")
+	ef.Set("MP_LOG_FILE", "/tmp/mailpit.log")
 	os.WriteFile(e.l.EnvFile, ef.Bytes(), 0o640)
 	if probs := e.svc.Manager.Validate(); len(probs) < 3 {
 		t.Fatalf("locked violations not reported: %v", probs)
@@ -366,8 +365,7 @@ func TestImport(t *testing.T) {
 		"MP_POP3_AUTH_FILE=" + old + "/users.auth\nMP_TAGS_CONFIG=" + old + "/tags.yaml\nMP_LOG_FILE=" + old + "/mailpit.log\n"
 	os.WriteFile(filepath.Join(old, "mailpit.ini"), []byte(ini), 0o644)
 
-	store, _ := users.Open(filepath.Join(e.l.Data, "users.yaml"))
-	notes, err := Import(e.l, filepath.Join(old, "mailpit.ini"), store)
+	notes, err := Import(e.l, filepath.Join(old, "mailpit.ini"))
 	if err != nil {
 		t.Fatal(err, notes)
 	}
@@ -381,6 +379,7 @@ func TestImport(t *testing.T) {
 		"MP_SMTP_AUTH_FILE": filepath.Join(e.l.Dir, "smtp.auth"),
 		"MP_POP3_AUTH_FILE": filepath.Join(e.l.Dir, "pop3.auth"),
 		"MP_SMTP_TLS_CERT":  filepath.Join(e.l.SSL, "cert.pem"),
+		"MP_UI_TLS_CERT":    filepath.Join(e.l.SSL, "cert.pem"),
 		"MP_TAGS_CONFIG":    e.l.Tags,
 	}
 	for k, v := range want {
@@ -388,7 +387,7 @@ func TestImport(t *testing.T) {
 			t.Errorf("%s = %q, want %q", k, m[k], v)
 		}
 	}
-	for _, k := range []string{"MP_UI_TLS_CERT", "MP_LOG_FILE"} {
+	for _, k := range []string{"MP_LOG_FILE"} {
 		if _, ok := m[k]; ok {
 			t.Errorf("%s should not be imported", k)
 		}
@@ -399,15 +398,33 @@ func TestImport(t *testing.T) {
 	if st, _ := os.Stat(filepath.Join(e.l.SSL, "key.pem")); st.Mode().Perm() != 0o600 {
 		t.Error("key file not private")
 	}
-	if _, ok := store.Authenticate("mamber", "mamber-password"); !ok {
-		t.Error("UI account not imported as Crew user")
+	ui, _ := os.ReadFile(e.l.UIAuth)
+	if !strings.Contains(string(ui), "mamber:") || !strings.Contains(string(ui), "crew:") {
+		t.Errorf("UI accounts not merged into ui.auth: %s", ui)
 	}
 	for _, p := range e.svc.Manager.Validate() {
-		if !strings.Contains(p, "certificate and key do not load") { // test certs are fake
+		if !strings.Contains(p.Msg, "certificate and key do not load") { // test certs are fake
 			t.Errorf("imported setup invalid: %v", p)
 		}
 	}
-	if _, err := Import(e.l, filepath.Join(old, "mailpit.ini"), store); err == nil {
+	if _, err := Import(e.l, filepath.Join(old, "mailpit.ini")); err == nil {
 		t.Error("second import over existing database accepted")
+	}
+}
+
+func TestAPIBase(t *testing.T) {
+	cases := []struct {
+		env  map[string]string
+		want string
+	}{
+		{nil, "http://127.0.0.1:8025"},
+		{map[string]string{"MP_UI_BIND_ADDR": "0.0.0.0:9000"}, "http://127.0.0.1:9000"},
+		{map[string]string{"MP_UI_BIND_ADDR": "192.168.1.5:8025", "MP_UI_TLS_CERT": "/c.pem"}, "https://192.168.1.5:8025"},
+		{map[string]string{"MP_UI_BIND_ADDR": "[::1]:8025"}, "http://[::1]:8025"},
+	}
+	for _, c := range cases {
+		if got := APIBase(c.env); got != c.want {
+			t.Errorf("%v: got %s want %s", c.env, got, c.want)
+		}
 	}
 }

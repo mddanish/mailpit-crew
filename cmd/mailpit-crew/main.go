@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,9 +20,9 @@ import (
 
 	"github.com/mddanish/mailpit-crew/internal/apply"
 	"github.com/mddanish/mailpit-crew/internal/audit"
+	"github.com/mddanish/mailpit-crew/internal/catalog"
 	"github.com/mddanish/mailpit-crew/internal/config"
 	"github.com/mddanish/mailpit-crew/internal/htpasswd"
-	"github.com/mddanish/mailpit-crew/internal/inbox"
 	"github.com/mddanish/mailpit-crew/internal/mailpit"
 	"github.com/mddanish/mailpit-crew/internal/managed"
 	"github.com/mddanish/mailpit-crew/internal/restart"
@@ -32,12 +33,12 @@ import (
 // version is set at build time with -ldflags "-X main.version=..."
 var version = "dev"
 
-const usage = `MailPit-Crew %s - runs and manages Mailpit (unofficial)
+const usage = `MailPit-Crew %s - installs, configures and runs Mailpit (unofficial)
 
 Usage:
-  mailpit-crew [flags]                         run Crew (and Mailpit, in managed mode)
-  mailpit-crew import [flags] <mailpit.ini>    import an existing Mailpit setup (managed mode)
-  mailpit-crew reset-password [flags] <user>   set a new random password for a Crew user
+  mailpit-crew [flags]                         run Crew, which runs Mailpit
+  mailpit-crew import [flags] <mailpit.ini>    import an existing Mailpit setup
+  mailpit-crew reset-password [flags]          set a new random password for the Crew admin
   mailpit-crew hash-password                   read a password from stdin, print a bcrypt hash
   mailpit-crew version                         print the version
 
@@ -77,12 +78,11 @@ func fail(err error) int {
 }
 
 func resetPassword(args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: mailpit-crew reset-password [flags] <user>")
-		return 2
+	user := users.AdminName
+	if len(args) > 0 && !strings.HasPrefix(args[len(args)-1], "-") {
+		user, args = args[len(args)-1], args[:len(args)-1]
 	}
-	user := args[len(args)-1]
-	cfg, err := config.Load(args[:len(args)-1], os.Stderr)
+	cfg, err := config.Load(args, os.Stderr)
 	if err != nil {
 		return fail(err)
 	}
@@ -117,7 +117,7 @@ func hashPassword() int {
 	return 0
 }
 
-// importSetup copies an existing Mailpit setup into the managed layout.
+// importSetup copies an existing Mailpit setup into Crew's folder.
 func importSetup(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: mailpit-crew import [flags] </path/to/mailpit.ini>")
@@ -128,23 +128,16 @@ func importSetup(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	if cfg.Mode != "managed" {
-		return fail(errors.New("import needs mode managed"))
-	}
 	layout := managed.NewLayout(cfg.MailpitDir(), cfg.DataDir)
 	st, err := managed.LoadState(layout.State)
 	if err != nil {
 		return fail(err)
 	}
-	if _, err := layout.Ensure(cfg.Managed.APIListen, st); err != nil {
-		return fail(err)
-	}
-	store, err := users.Open(cfg.UsersFile)
-	if err != nil {
+	if _, err := layout.Ensure(st); err != nil {
 		return fail(err)
 	}
 	fmt.Println("Stop the old Mailpit before importing, so the database copy is complete.")
-	notes, err := managed.Import(layout, src, store)
+	notes, err := managed.Import(layout, src)
 	for _, n := range notes {
 		fmt.Println(" -", n)
 	}
@@ -239,127 +232,153 @@ func serve(args []string) error {
 		return err
 	} else if pw != "" {
 		// shown once; the hash is stored in the users file
-		log.Warn("created first Crew admin, log in and change the password", "user", "admin", "password", pw, "file", cfg.UsersFile)
+		log.Warn("created the Crew admin login, log in and change the password", "user", users.AdminName, "password", pw, "file", cfg.UsersFile)
 		if isTerminal(os.Stdout) {
-			fmt.Printf("\nFirst Crew login: admin / %s\n\n", pw)
+			fmt.Printf("\nCrew login: %s / %s\n\n", users.AdminName, pw)
 		}
 	}
 
-	opts := apply.Options{
-		EnvFile: cfg.Mailpit.EnvFile,
-		Overrides: map[string]string{
-			"MP_UI_AUTH_FILE":       cfg.Mailpit.UIAuthFile,
-			"MP_SMTP_AUTH_FILE":     cfg.Mailpit.SMTPAuthFile,
-			"MP_POP3_AUTH_FILE":     cfg.Mailpit.POP3AuthFile,
-			"MP_SEND_API_AUTH_FILE": cfg.Mailpit.SendAPIAuthFile,
-			"MP_TAGS_CONFIG":        cfg.Mailpit.TagsFile,
-			"MP_LOG_FILE":           cfg.Mailpit.LogFile,
-		},
-		ManagedDirs: cfg.Mailpit.ManagedDirs,
-		BackupDir:   filepath.Join(cfg.DataDir, "backups"),
+	layout := managed.NewLayout(cfg.MailpitDir(), cfg.DataDir)
+	st, err := managed.LoadState(layout.State)
+	if err != nil {
+		return err
+	}
+	notes, err := layout.Ensure(st)
+	if err != nil {
+		return fmt.Errorf("prepare %s: %w", layout.Dir, err)
+	}
+	for _, n := range notes {
+		log.Info(n)
+	}
+
+	client := mailpit.New(managed.APIBase(nil), st.APIUser, st.APIPassword)
+	script := &restart.Script{Path: layout.Ctl, LogFile: layout.Log, Log: log}
+	var mgr *apply.Manager
+	// Crew talks to the API through Mailpit's web UI address, which can
+	// change with the settings. It follows the settings Mailpit runs with.
+	followUI := func() {
+		if env, err := mgr.Env(); err == nil {
+			client.SetBase(managed.APIBase(env.Map()))
+		}
+	}
+	crewPort := cfg.ListenPort()
+	mgr = apply.New(apply.Options{
+		EnvFile:     layout.EnvFile,
+		ManagedDir:  layout.Dir,
+		BackupDir:   layout.Backups,
+		ActiveDir:   layout.Active,
 		Keep:        cfg.Backups.Keep,
+		Restarter:   script,
+		Ready:       readiness{client, followUI},
 		Timeout:     cfg.Restart.Timeout.Duration,
-		ServiceUser: cfg.Mailpit.APIUser,
+		ServiceUser: st.APIUser,
+		Locked:      layout.Locked(),
+		Extra:       func(env map[string]string) []catalog.FieldError { return portClashes(env, crewPort) },
+		Started:     followUI,
 		Log:         log,
+	})
+	if changed, err := mgr.RepairLocked(); err != nil {
+		return err
+	} else if len(changed) > 0 {
+		log.Warn("reset settings managed by Crew", "keys", strings.Join(changed, ","))
 	}
-
-	var (
-		client *mailpit.Client
-		svc    *managed.Service
-		rs     restart.Restarter
-	)
-	if cfg.Mode == "managed" {
-		layout := managed.NewLayout(cfg.MailpitDir(), cfg.DataDir)
-		st, err := managed.LoadState(layout.State)
-		if err != nil {
-			return err
-		}
-		notes, err := layout.Ensure(cfg.Managed.APIListen, st)
-		if err != nil {
-			return fmt.Errorf("prepare %s: %w", layout.Dir, err)
-		}
-		for _, n := range notes {
-			log.Info(n)
-		}
-		client = mailpit.New(cfg.Mailpit.APIURL, st.APIUser, st.APIPassword)
-		script := &restart.Script{Path: layout.Ctl, LogFile: layout.Log, Log: log}
-		rs = script
-		opts.ServiceUser = st.APIUser
-		opts.Locked = layout.Locked(cfg.Managed.APIListen)
-		opts.Restarter, opts.Ready = rs, client
-		mgr := apply.New(opts)
-		if changed, err := mgr.RepairLocked(); err != nil {
-			return err
-		} else if len(changed) > 0 {
-			log.Warn("reset settings managed by Crew", "keys", strings.Join(changed, ","))
-		}
-		svc = &managed.Service{
-			Layout: layout,
-			Releases: &managed.Releases{
-				APIURL:      cfg.Managed.ReleasesURL,
-				FeedURL:     "https://github.com/axllent/mailpit/releases.atom",
-				DownloadURL: cfg.Managed.DownloadURL,
-			},
-			Script:  script,
-			Manager: mgr,
-			Log:     log,
-		}
-		return run(cfg, log, store, mgr, client, rs, svc)
+	followUI()
+	svc := &managed.Service{
+		Layout: layout,
+		Releases: &managed.Releases{
+			APIURL:      cfg.Managed.ReleasesURL,
+			FeedURL:     "https://github.com/axllent/mailpit/releases.atom",
+			DownloadURL: cfg.Managed.DownloadURL,
+		},
+		Script:  script,
+		Manager: mgr,
+		Log:     log,
 	}
-
-	client = mailpit.New(cfg.Mailpit.APIURL, cfg.Mailpit.APIUser, cfg.Mailpit.APIPassword)
-	switch cfg.Restart.Mode {
-	case "child":
-		rs = &restart.Child{Binary: cfg.Child.Binary, Args: cfg.Child.Args, EnvFile: cfg.Mailpit.EnvFile, Log: log.With("component", "child")}
-	default:
-		rs = &restart.Command{Args: cfg.Restart.Command, Log: log}
-	}
-	opts.Restarter, opts.Ready = rs, client
-	return run(cfg, log, store, apply.New(opts), client, rs, nil)
+	return run(cfg, log, store, mgr, client, svc)
 }
 
-func run(cfg *config.Config, log *slog.Logger, store *users.Store, mgr *apply.Manager, client *mailpit.Client, rs restart.Restarter, svc *managed.Service) error {
+// readiness points the client at the new UI address before waiting, since
+// a restart may have changed it.
+type readiness struct {
+	c      *mailpit.Client
+	before func()
+}
+
+func (r readiness) WaitReady(ctx context.Context) error {
+	r.before()
+	return r.c.WaitReady(ctx)
+}
+
+func (r readiness) Uptime(ctx context.Context) (time.Duration, error) { return r.c.Uptime(ctx) }
+
+// portClashes reports Mailpit ports that are used twice, or by Crew.
+func portClashes(env map[string]string, crewPort string) []catalog.FieldError {
+	var out []catalog.FieldError
+	defaults := map[string]string{"MP_UI_BIND_ADDR": managed.DefaultUIAddr, "MP_SMTP_BIND_ADDR": "[::]:1025", "MP_POP3_BIND_ADDR": "[::]:1110"}
+	used := map[string]string{}
+	for _, k := range []string{"MP_UI_BIND_ADDR", "MP_SMTP_BIND_ADDR", "MP_POP3_BIND_ADDR"} {
+		v := env[k]
+		if v == "" {
+			if k == "MP_POP3_BIND_ADDR" && env["MP_POP3_AUTH_FILE"] == "" && env["MP_POP3_AUTH"] == "" {
+				continue // POP3 is off
+			}
+			v = defaults[k]
+		}
+		_, port, err := net.SplitHostPort(v)
+		if err != nil {
+			continue
+		}
+		if port == crewPort {
+			out = append(out, catalog.FieldError{Key: k, Err: "port " + port + " is used by MailPit-Crew itself"})
+		} else if other, ok := used[port]; ok {
+			out = append(out, catalog.FieldError{Key: k, Err: "port " + port + " is also used by " + other})
+		}
+		used[port] = k
+	}
+	return out
+}
+
+func run(cfg *config.Config, log *slog.Logger, store *users.Store, mgr *apply.Manager, client *mailpit.Client, svc *managed.Service) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if svc != nil {
-		choice := cfg.Managed.Version
-		if !svc.HasBinary() && choice == "" && isTerminal(os.Stdin) {
-			choice = promptVersion(ctx, svc.Releases)
-		}
-		switch {
-		case !svc.HasBinary() && choice != "":
-			log.Info("installing Mailpit", "choice", choice)
-			name, err := svc.Use(ctx, choice)
-			if err != nil {
-				log.Error("could not start Mailpit, choose a version in the web UI", "error", err)
-			} else {
-				log.Info("mailpit running", "binary", name)
-			}
-		case svc.HasBinary():
-			if err := svc.Start(); err != nil {
-				log.Error("mailpit did not start", "error", err)
-			}
-		default:
-			log.Warn("no Mailpit version selected yet, choose one in the web UI (Mailpit page)")
-		}
-		go svc.Watch(ctx, 30*time.Second)
-	} else if err := rs.Start(); err != nil {
-		return err
+	choice := cfg.Managed.Version
+	if !svc.HasBinary() && choice == "" && isTerminal(os.Stdin) {
+		choice = promptVersion(ctx, svc.Releases)
 	}
+	switch {
+	case !svc.HasBinary() && choice != "":
+		log.Info("installing Mailpit", "choice", choice)
+		name, err := svc.Use(ctx, choice)
+		if err != nil {
+			log.Error("could not start Mailpit, choose a version in the web UI", "error", err)
+		} else {
+			log.Info("mailpit running", "binary", name)
+		}
+	case svc.HasBinary():
+		if err := svc.Start(); err != nil {
+			log.Error("mailpit did not start", "error", err)
+		} else if !mgr.HasActive() {
+			// first start with this Crew version: what runs now is the baseline
+			if err := mgr.MarkStarted(); err != nil {
+				log.Error("record active files", "error", err)
+			}
+		}
+	default:
+		log.Warn("no Mailpit version selected yet, choose one in the web UI (Mailpit page)")
+	}
+	go svc.Watch(ctx, 30*time.Second)
 
 	srv, err := web.New(web.Options{
 		Webroot:      cfg.Webroot,
 		SecureCookie: cfg.TLS.Cert != "",
 		SessionTTL:   cfg.Session.TTL.Duration,
-		ApplyTimeout: cfg.Restart.Timeout.Duration,
 		Version:      version,
-		RestartMode:  rs.Mode(),
+		CrewPort:     cfg.ListenPort(),
 		Users:        store,
 		Manager:      mgr,
 		Mailpit:      client,
 		Managed:      svc,
-		Inbox:        &inbox.Inbox{Client: client},
 		Audit:        audit.New(filepath.Join(cfg.DataDir, "audit.log")),
 		Log:          log,
 	})
@@ -372,12 +391,12 @@ func run(cfg *config.Config, log *slog.Logger, store *users.Store, mgr *apply.Ma
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      15 * time.Minute, // version downloads and applies run inside requests
+		WriteTimeout:      15 * time.Minute, // version downloads and restarts run inside requests
 		IdleTimeout:       120 * time.Second,
 	}
 	errc := make(chan error, 1)
 	go func() {
-		log.Info("mailpit-crew started", "version", version, "mode", cfg.Mode, "listen", cfg.Listen, "tls", cfg.TLS.Cert != "", "home", cfg.Home, "config", cfg.ConfigFile)
+		log.Info("mailpit-crew started", "version", version, "listen", cfg.Listen, "tls", cfg.TLS.Cert != "", "home", cfg.Home, "config", cfg.ConfigFile)
 		if cfg.TLS.Cert != "" {
 			errc <- httpSrv.ListenAndServeTLS(cfg.TLS.Cert, cfg.TLS.Key)
 		} else {
@@ -388,7 +407,7 @@ func run(cfg *config.Config, log *slog.Logger, store *users.Store, mgr *apply.Ma
 	var serveErr error
 	select {
 	case <-ctx.Done():
-		log.Info("shutting down")
+		log.Info("shutting down; Mailpit keeps running (mailpit/ctl.sh stop to stop it)")
 	case err := <-errc:
 		if !errors.Is(err, http.ErrServerClosed) {
 			serveErr = err
@@ -397,10 +416,5 @@ func run(cfg *config.Config, log *slog.Logger, store *users.Store, mgr *apply.Ma
 	sctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(sctx)
-	if svc == nil {
-		// external child mode: Mailpit is Crew's child and stops with it.
-		// Managed mode leaves Mailpit running; use mailpit/ctl.sh stop.
-		_ = rs.Stop(sctx)
-	}
 	return serveErr
 }

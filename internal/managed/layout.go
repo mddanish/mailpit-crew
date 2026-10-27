@@ -6,6 +6,7 @@ package managed
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -46,6 +47,8 @@ type Layout struct {
 	PID     string
 	SSL     string
 	State   string
+	Active  string // copy of the files Mailpit last started with
+	Backups string
 }
 
 // NewLayout returns the layout for a home and data directory.
@@ -64,11 +67,13 @@ func NewLayout(mailpitDir, dataDir string) Layout {
 		PID:     filepath.Join(mailpitDir, "mailpit.pid"),
 		SSL:     filepath.Join(mailpitDir, "ssl"),
 		State:   filepath.Join(dataDir, "state.yaml"),
+		Active:  filepath.Join(dataDir, "active"),
+		Backups: filepath.Join(dataDir, "backups"),
 	}
 }
 
-// AuthFile returns the standard path of an optional password file.
-func (l Layout) AuthFile(key string) string {
+// StandardFile returns the path Crew uses for an optional file setting.
+func (l Layout) StandardFile(key string) string {
 	switch key {
 	case "MP_SMTP_AUTH_FILE":
 		return filepath.Join(l.Dir, "smtp.auth")
@@ -76,24 +81,29 @@ func (l Layout) AuthFile(key string) string {
 		return filepath.Join(l.Dir, "pop3.auth")
 	case "MP_SEND_API_AUTH_FILE":
 		return filepath.Join(l.Dir, "send-api.auth")
+	case "MP_TAGS_CONFIG":
+		return l.Tags
+	case "MP_SMTP_RELAY_CONFIG":
+		return filepath.Join(l.Dir, "relay.yaml")
+	case "MP_SMTP_FORWARD_CONFIG":
+		return filepath.Join(l.Dir, "forward.yaml")
 	}
 	return ""
 }
 
-// Locked returns the env keys Crew controls in managed mode ("" = unset).
-func (l Layout) Locked(apiListen string) map[string]string {
+// Locked returns the env keys Crew controls ("" = must not be set).
+func (l Layout) Locked() map[string]string {
 	return map[string]string{
-		"MP_DATABASE":      l.DB,
-		"MP_UI_BIND_ADDR":  apiListen,
-		"MP_UI_AUTH_FILE":  l.UIAuth,
-		"MP_TAGS_USERNAME": "true",
-		"MP_UI_AUTH":       "",
-		"MP_UI_TLS_CERT":   "",
-		"MP_UI_TLS_KEY":    "",
-		"MP_WEBROOT":       "",
-		"MP_LOG_FILE":      "",
+		"MP_DATABASE":     l.DB,
+		"MP_UI_AUTH_FILE": l.UIAuth,
+		"MP_UI_AUTH":      "", // inline credentials would replace ui.auth
+		"MP_WEBROOT":      "", // Crew calls the API at /
+		"MP_LOG_FILE":     "", // ctl.sh writes Mailpit's output to mailpit.log
 	}
 }
+
+// DefaultUIAddr is where Mailpit's web UI listens on a new install.
+const DefaultUIAddr = "[::]:8025"
 
 // State is Crew's managed-mode state (data/state.yaml, mode 0600).
 type State struct {
@@ -147,14 +157,14 @@ func (s *State) Save() error {
 }
 
 const envHeader = `# Mailpit settings, managed by MailPit-Crew.
-# Change them in the Crew web UI. Keys that Crew depends on (database,
-# API address, API password file, username tags) are reset on start.
+# Change them in the Crew web UI, then restart Mailpit from Crew.
+# MP_DATABASE and MP_UI_AUTH_FILE are managed by Crew and reset on start.
 `
 
 // Ensure creates the folder layout and first-run files, writes ctl.sh when
 // missing, makes sure the locked settings are set and the service account
 // can log in. It returns notes about what it created or repaired.
-func (l Layout) Ensure(apiListen string, st *State) ([]string, error) {
+func (l Layout) Ensure(st *State) ([]string, error) {
 	var notes []string
 	for _, d := range []string{l.Data, l.Dir, l.Bin} {
 		if err := os.MkdirAll(d, 0o750); err != nil {
@@ -190,9 +200,8 @@ func (l Layout) Ensure(apiListen string, st *State) ([]string, error) {
 		b.WriteString(envHeader)
 		for _, kv := range [][2]string{
 			{"MP_DATABASE", l.DB},
-			{"MP_UI_BIND_ADDR", apiListen},
+			{"MP_UI_BIND_ADDR", DefaultUIAddr},
 			{"MP_UI_AUTH_FILE", l.UIAuth},
-			{"MP_TAGS_USERNAME", "true"},
 			{"MP_TAGS_CONFIG", l.Tags},
 			{"MP_SMTP_BIND_ADDR", "[::]:1025"},
 			{"MP_DISABLE_VERSION_CHECK", "true"},
@@ -366,3 +375,26 @@ version) "$BIN" version --no-release-check ;;
 	;;
 esac
 `
+
+// APIBase returns the URL Crew uses for Mailpit's API, from the env file:
+// the web UI address (wildcard hosts become 127.0.0.1), https when Mailpit
+// serves the UI with TLS.
+func APIBase(env map[string]string) string {
+	addr := env["MP_UI_BIND_ADDR"]
+	if addr == "" {
+		addr = DefaultUIAddr
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		host, port = "", "8025"
+	}
+	switch host {
+	case "", "::", "0.0.0.0":
+		host = "127.0.0.1"
+	}
+	scheme := "http"
+	if env["MP_UI_TLS_CERT"] != "" {
+		scheme = "https"
+	}
+	return scheme + "://" + net.JoinHostPort(host, port)
+}

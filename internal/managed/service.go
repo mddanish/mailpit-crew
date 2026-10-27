@@ -216,7 +216,7 @@ func (s *Service) Use(ctx context.Context, choice string) (string, error) {
 			}
 			return fmt.Errorf("%v (rolled back to %s)", err, filepath.Base(prev))
 		}
-		return nil
+		return s.Manager.MarkStarted()
 	})
 	if err != nil {
 		return "", err
@@ -265,7 +265,8 @@ func (s *Service) Watch(ctx context.Context, every time.Duration) {
 			return
 		case <-t.C:
 		}
-		if !s.HasBinary() || s.Running() {
+		// after a failed restart the admin decides: fix or roll back
+		if !s.HasBinary() || s.Manager.Failure() != nil || s.Running() {
 			continue
 		}
 		err := s.Manager.Exclusive(func() error {

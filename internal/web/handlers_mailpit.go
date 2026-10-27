@@ -6,8 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mddanish/mailpit-crew/internal/apply"
-	"github.com/mddanish/mailpit-crew/internal/catalog"
 	"github.com/mddanish/mailpit-crew/internal/mailpit"
 	"github.com/mddanish/mailpit-crew/internal/managed"
 )
@@ -30,15 +28,10 @@ type mailpitData struct {
 	LastError  string
 	LogTail    []string
 	Asset      string
-	Warning    string
 }
 
 func (s *Server) mailpitPage(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 	svc := s.opts.Managed
-	if svc == nil {
-		s.render(w, c, "message", "Mailpit", "mailpit", "Crew runs in external mode: Mailpit is installed and run separately.")
-		return
-	}
 	d := mailpitData{
 		Active:    svc.ActiveVersion(),
 		Running:   svc.Running(),
@@ -48,7 +41,6 @@ func (s *Server) mailpitPage(w http.ResponseWriter, r *http.Request, c *reqCtx) 
 		LogTail:   s.opts.Manager.LogTail(),
 		Asset:     managed.AssetName(),
 	}
-	d.Warning = usernameWarning(d.Active)
 	ctx, cancel := s.ctx(r, 5*time.Second)
 	defer cancel()
 	if d.Running {
@@ -73,10 +65,6 @@ func (s *Server) mailpitPage(w http.ResponseWriter, r *http.Request, c *reqCtx) 
 
 func (s *Server) mailpitUse(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 	svc := s.opts.Managed
-	if svc == nil {
-		http.NotFound(w, r)
-		return
-	}
 	choice := strings.TrimSpace(r.PostFormValue("choice"))
 	// not tied to the request: downloads and restarts must finish
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -94,10 +82,6 @@ func (s *Server) mailpitUse(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 
 func (s *Server) mailpitRemove(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 	svc := s.opts.Managed
-	if svc == nil {
-		http.NotFound(w, r)
-		return
-	}
 	name := r.PostFormValue("name")
 	if err := svc.Remove(name); err != nil {
 		s.flash(c, "error", err.Error())
@@ -106,75 +90,4 @@ func (s *Server) mailpitRemove(w http.ResponseWriter, r *http.Request, c *reqCtx
 		s.flash(c, "ok", "Removed "+name+".")
 	}
 	s.redirect(w, r, "admin/mailpit")
-}
-
-// optionalAuthKeys are password files that can be turned on in managed mode.
-var optionalAuthKeys = []string{"MP_SMTP_AUTH_FILE", "MP_POP3_AUTH_FILE", "MP_SEND_API_AUTH_FILE"}
-
-type enableOption struct {
-	Key   string
-	Label string
-	Path  string
-	Note  string
-}
-
-func (s *Server) enableOptions() []enableOption {
-	svc := s.opts.Managed
-	if svc == nil {
-		return nil
-	}
-	env, err := s.opts.Manager.Env()
-	if err != nil {
-		return nil
-	}
-	notes := map[string]string{
-		"MP_SMTP_AUTH_FILE":     "Apps must log in to send mail. Without it, Mailpit accepts mail from anyone.",
-		"MP_POP3_AUTH_FILE":     "Turns on the POP3 server. Every POP3 account can read all mail.",
-		"MP_SEND_API_AUTH_FILE": "Protects the HTTP Send API.",
-	}
-	var out []enableOption
-	for _, k := range optionalAuthKeys {
-		if v, _ := env.Get(k); v != "" {
-			continue
-		}
-		key, _ := catalog.Lookup(k)
-		out = append(out, enableOption{Key: k, Label: key.AuthFile, Path: svc.Layout.AuthFile(k), Note: notes[k]})
-	}
-	return out
-}
-
-func (s *Server) accountsEnable(w http.ResponseWriter, r *http.Request, c *reqCtx) {
-	svc := s.opts.Managed
-	key := r.PostFormValue("key")
-	ok := false
-	for _, k := range optionalAuthKeys {
-		ok = ok || k == key
-	}
-	if svc == nil || !ok {
-		http.NotFound(w, r)
-		return
-	}
-	f, found := s.opts.Manager.FileByID("env")
-	env, err := s.opts.Manager.Env()
-	if !found || err != nil {
-		s.flash(c, "error", "Cannot read the Mailpit settings.")
-		s.redirect(w, r, "admin/accounts")
-		return
-	}
-	if err := env.Set(key, svc.Layout.AuthFile(key)); err == nil {
-		err = s.opts.Manager.Stage(f, env.Bytes())
-	}
-	if err != nil {
-		s.flash(c, "error", err.Error())
-	} else {
-		s.audit(r, c.user.Username, "stage", f.Path, "ok", "enable "+key)
-		s.flash(c, "ok", "Staged "+key+". Add the first account below, then apply on the Changes page.")
-	}
-	for _, af := range s.opts.Manager.Files() {
-		if af.Kind == apply.KindAuth && af.Path == svc.Layout.AuthFile(key) {
-			s.redirect(w, r, "admin/accounts/"+af.ID)
-			return
-		}
-	}
-	s.redirect(w, r, "admin/accounts")
 }

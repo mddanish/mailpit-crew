@@ -1,0 +1,30 @@
+{{define "editor"}}
+{{$e := .Data.Editor}}
+<section class="card">
+  <form method="post" action="{{.Root}}admin/edit/{{$e.Kind}}" class="editor-form" data-verify="{{.Root}}admin/verify/{{$e.Kind}}">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="base" value="{{$e.Base}}">
+    <div class="row spread editor-bar">
+      <div class="row">
+        <button type="button" class="secondary" data-verify-btn>Verify</button>
+        <button type="submit">Save</button>
+        <span class="verify-result muted"></span>
+      </div>
+      {{if $e.Examples}}
+      <div class="row">
+        <label class="check">Example
+          <select data-example>
+            <option value="">insert…</option>
+            {{range $i, $x := $e.Examples}}<option value="{{$i}}">{{$x.Name}}</option>{{end}}
+          </select>
+        </label>
+      </div>
+      {{end}}
+    </div>
+    <textarea name="content" rows="24" spellcheck="false" data-editor="{{$e.Lang}}" data-issues="{{json $e.Issues}}">{{$e.Content}}</textarea>
+    <script type="application/json" class="examples-data">{{json $e.Examples}}</script>
+    <ul class="issues">{{range $e.Issues}}<li class="{{if .Warn}}warn{{else}}error{{end}}">{{.String}}</li>{{end}}</ul>
+    <p class="muted small">Save checks the file the way Mailpit reads it. Secret values show as <code>__CREW_SECRET_UNCHANGED__</code>; leave that text to keep them.</p>
+  </form>
+</section>
+{{end}}

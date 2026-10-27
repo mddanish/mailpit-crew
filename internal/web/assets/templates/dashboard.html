@@ -1,53 +1,56 @@
 {{define "content"}}
+{{$d := .Data}}
 <h1>Status</h1>
 <div class="grid">
   <section class="card">
     <h2>Mailpit</h2>
-    {{with .Data.Info}}
+    {{with $d.Info}}
     <dl>
-      <dt>Version</dt><dd>{{.Version}}{{if and .LatestVersion (ne .LatestVersion .Version)}} <span class="muted">(latest {{.LatestVersion}})</span>{{end}}</dd>
+      <dt>Version</dt><dd>{{.Version}}{{if and .LatestVersion (ne .LatestVersion .Version) (ne .LatestVersion "disabled")}} <span class="muted">(latest {{.LatestVersion}})</span>{{end}}</dd>
       <dt>Uptime</dt><dd>{{uptime .RuntimeStats.Uptime}}</dd>
       <dt>Messages</dt><dd>{{.Messages}} ({{.Unread}} unread)</dd>
-      <dt>Database</dt><dd>{{.Database}} · {{bytes .DatabaseSize}}</dd>
-      <dt>SMTP accepted</dt><dd>{{.RuntimeStats.SMTPAccepted}} · rejected {{.RuntimeStats.SMTPRejected}}</dd>
+      <dt>Database</dt><dd>{{bytes .DatabaseSize}}</dd>
+      <dt>SMTP</dt><dd>{{.RuntimeStats.SMTPAccepted}} accepted · {{.RuntimeStats.SMTPRejected}} rejected</dd>
     </dl>
     {{else}}
     {{if .Setup}}
     <div class="flash info">No Mailpit version selected. <a href="{{.Root}}admin/mailpit">Choose one</a>.</div>
     {{else}}
-    <div class="flash error">Mailpit API not reachable: {{.Data.InfoError}}</div>
+    <div class="flash error">Mailpit API not reachable: {{$d.InfoError}}</div>
     {{end}}
     {{end}}
-    {{if .Managed}}<p><a href="{{.Root}}admin/mailpit">Manage Mailpit version</a></p>{{end}}
+    {{with $d.UIURL}}<p>Mail is read in Mailpit: <a href="{{.}}" target="_blank" rel="noopener">{{.}}</a></p>{{end}}
   </section>
   <section class="card">
     <h2>Crew</h2>
     <dl>
       <dt>Version</dt><dd>{{.Version}}</dd>
-      <dt>Mode</dt><dd>{{if .Managed}}managed (Crew runs Mailpit with ctl.sh){{else}}external ({{.Data.RestartMode}}){{end}}</dd>
-      <dt>Pending changes</dt><dd>{{.Pending}}</dd>
-      {{with .Data.Last}}
-      <dt>Last apply</dt><dd>{{.Time.Format "2006-01-02 15:04:05"}} by {{.User}}: {{if .OK}}<span class="ok">ok</span>{{else}}<span class="error">failed</span>{{if .RolledBack}} (rolled back){{end}}{{end}}</dd>
-      {{end}}
+      <dt>Changes not active</dt><dd>{{if .Pending}}<a href="{{.Root}}admin/pending">{{.Pending}} file(s)</a>{{else}}none{{end}}</dd>
     </dl>
+    <form method="post" action="{{.Root}}admin/restart" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button type="submit" class="secondary" data-confirm-click="Restart Mailpit now?">Restart Mailpit</button>
+    </form>
   </section>
 </div>
+
+{{with $d.Problems}}<div class="flash error">Problems in the saved files (a restart is refused until fixed):<ul>{{range .}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
 
 <section class="card">
   <h2>Checks</h2>
   <ul class="checks">
-    {{range .Data.Checks}}
+    {{range $d.Checks}}
     <li class="{{.Level}}"><strong>{{.Title}}</strong><br><span class="muted">{{.Text}}</span></li>
     {{end}}
   </ul>
 </section>
 
 <section class="card">
-  <h2>Managed files</h2>
+  <h2>Files</h2>
   <table>
     <thead><tr><th>File</th><th>Path</th><th>Used by</th><th>State</th></tr></thead>
     <tbody>
-    {{range .Data.Files}}
+    {{range $d.Files}}
     <tr>
       <td>{{.Label}}</td>
       <td><code>{{.Path}}</code></td>

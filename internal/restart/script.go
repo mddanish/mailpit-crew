@@ -20,9 +20,6 @@ type Script struct {
 	tail    ring
 }
 
-// Mode implements Restarter.
-func (s *Script) Mode() string { return "script" }
-
 func (s *Script) run(ctx context.Context, action string) error {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc

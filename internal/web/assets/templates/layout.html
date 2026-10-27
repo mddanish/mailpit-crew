@@ -4,8 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}} · MailPit-Crew</title>
+<link rel="stylesheet" href="{{.Root}}static/vendor/codemirror/codemirror.css">
 <link rel="stylesheet" href="{{.Root}}static/style.css">
 <link rel="icon" href="{{.Root}}static/icon.svg" type="image/svg+xml">
+<script src="{{.Root}}static/vendor/codemirror/codemirror.min.js" defer></script>
 <script src="{{.Root}}static/app.js" defer></script>
 </head>
 <body>
@@ -13,16 +15,13 @@
   <a class="brand" href="{{.Root}}">MailPit-Crew</a>
   {{if .User}}
   <nav>
-    <a href="{{.Root}}inbox" {{if eq .Nav "inbox"}}class="active"{{end}}>Inbox</a>
-    {{if .User.IsAdmin}}
-    <a href="{{.Root}}admin/users" {{if eq .Nav "users"}}class="active"{{end}}>Users</a>
     <a href="{{.Root}}admin" {{if eq .Nav "status"}}class="active"{{end}}>Status</a>
-    {{if .Managed}}<a href="{{.Root}}admin/mailpit" {{if eq .Nav "mailpit"}}class="active"{{end}}>Mailpit</a>{{end}}
+    <a href="{{.Root}}admin/mailpit" {{if eq .Nav "mailpit"}}class="active"{{end}}>Mailpit</a>
     <a href="{{.Root}}admin/settings" {{if eq .Nav "settings"}}class="active"{{end}}>Settings</a>
     <a href="{{.Root}}admin/accounts" {{if eq .Nav "accounts"}}class="active"{{end}}>Accounts</a>
-    <a href="{{.Root}}admin/tags" {{if eq .Nav "tags"}}class="active"{{end}}>Tag rules</a>
-    <a href="{{.Root}}admin/changes" {{if eq .Nav "changes"}}class="active"{{end}}>Changes{{if .Pending}} <span class="badge">{{.Pending}}</span>{{end}}</a>
-    {{end}}
+    <a href="{{.Root}}admin/file/tags" {{if eq .Nav "tags"}}class="active"{{end}}>Tags</a>
+    <a href="{{.Root}}admin/file/relay" {{if eq .Nav "relay"}}class="active"{{end}}>Relay</a>
+    <a href="{{.Root}}admin/file/forward" {{if eq .Nav "forward"}}class="active"{{end}}>Forward</a>
   </nav>
   <div class="who">
     <a href="{{.Root}}account/password" {{if eq .Nav "password"}}class="active"{{end}}>{{.User.Username}}</a>
@@ -34,18 +33,44 @@
   {{end}}
 </header>
 <main>
-  {{if and .Setup (ne .Nav "mailpit") .User.IsAdmin}}
+  {{if .User}}
+  {{with .Failure}}
+  <div class="flash error notice">
+    <strong>Mailpit did not start after the last restart.</strong> {{.Error}}
+    {{if .LogTail}}<pre class="log">{{range .LogTail}}{{.}}
+{{end}}</pre>{{end}}
+    <div class="row">
+      <span>Fix the settings and restart again, or go back to the files Mailpit last ran with.</span>
+      <form method="post" action="{{$.Root}}admin/restart" class="inline">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <button type="submit">Restart again</button>
+      </form>
+      <form method="post" action="{{$.Root}}admin/rollback" class="inline" data-confirm="Restore the files Mailpit last ran with and restart? Your newer changes are kept as backups.">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <button type="submit" class="danger">Roll back</button>
+      </form>
+    </div>
+  </div>
+  {{else}}
+  {{if and .Pending (ne .Nav "pending")}}
+  <div class="flash warn notice row spread">
+    <span><strong>{{.Pending}} file(s) changed</strong> but not active in the running Mailpit. <a href="{{.Root}}admin/pending">Show changes</a></span>
+    <form method="post" action="{{.Root}}admin/restart" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button type="submit">Restart Mailpit</button>
+    </form>
+  </div>
+  {{end}}
+  {{end}}
+  {{if and .Setup (ne .Nav "mailpit")}}
   <div class="flash error">Mailpit is not set up yet. <a href="{{.Root}}admin/mailpit">Choose a Mailpit version</a> to start it.</div>
   {{end}}
-  {{if and .Pending (ne .Nav "changes")}}
-  <div class="flash info">{{.Pending}} file(s) have staged changes. <a href="{{.Root}}admin/changes">Review and apply</a>.</div>
   {{end}}
   {{range .Flashes}}
   <div class="flash {{.Kind}}">
     {{.Text}}
     {{if .Secret}}<code class="secret">{{.Secret}}</code>{{end}}
-    {{if .List}}<pre class="log">{{range .List}}{{.}}
-{{end}}</pre>{{end}}
+    {{if .List}}<ul>{{range .List}}<li>{{.}}</li>{{end}}</ul>{{end}}
   </div>
   {{end}}
   {{template "content" .}}

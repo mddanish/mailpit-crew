@@ -1,0 +1,23 @@
+{{define "content"}}
+<h1>Changes not active</h1>
+{{if not .Data.Changes}}
+<section class="card"><p>The running Mailpit uses the files as they are. Nothing to restart.</p></section>
+{{else}}
+<p class="muted">These files differ from what the running Mailpit started with: saved in Crew or edited by hand. Restart Mailpit to make them active.</p>
+{{with .Data.Problems}}<div class="flash error">Fix these first, or the restart is refused:<ul>{{range .}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
+{{range .Data.Changes}}
+<section class="card">
+  <h2>{{.File.Label}} <code class="muted">{{.File.Path}}</code>{{if .New}} <span class="badge muted-badge">new</span>{{end}}</h2>
+  <pre class="diff">{{range .Diff}}<span class="d{{if eq .Op "+"}}a{{else if eq .Op "-"}}r{{else if eq .Op "…"}}s{{end}}">{{if eq .Op "…"}}  …{{else}}{{.Op}} {{.Text}}{{end}}</span>
+{{end}}</pre>
+</section>
+{{end}}
+<div class="actions">
+  <form method="post" action="{{.Root}}admin/restart" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="back" value="admin/pending">
+    <button type="submit" {{if .Data.Problems}}disabled{{end}}>Restart Mailpit</button>
+  </form>
+</div>
+{{end}}
+{{end}}

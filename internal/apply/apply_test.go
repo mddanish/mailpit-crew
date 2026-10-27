@@ -17,264 +17,214 @@ type fakeRestarter struct {
 	fail  func(call int) error
 }
 
-func (f *fakeRestarter) Mode() string                  { return "command" }
 func (f *fakeRestarter) Start() error                  { return nil }
 func (f *fakeRestarter) Stop(context.Context) error    { return nil }
 func (f *fakeRestarter) LogTail() []string             { return []string{"fake log"} }
 func (f *fakeRestarter) Restart(context.Context) error { f.calls++; return f.fail(f.calls) }
 
-type fakeReady struct {
-	err    func() error
-	uptime time.Duration
-}
+type fakeReady struct{ up func() time.Duration }
 
-func (f fakeReady) WaitReady(context.Context) error { return f.err() }
+func (f fakeReady) WaitReady(context.Context) error { return nil }
 func (f fakeReady) Uptime(context.Context) (time.Duration, error) {
-	if f.uptime == 0 {
+	if f.up == nil {
 		return time.Hour, nil
 	}
-	return f.uptime, nil
+	return f.up(), nil
 }
 
-func setup(t *testing.T) (dir string, m *Manager, rs *fakeRestarter, ready *error) {
+func setup(t *testing.T) (string, *Manager, *fakeRestarter) {
 	t.Helper()
-	dir = t.TempDir()
+	dir := t.TempDir()
+	mp := filepath.Join(dir, "mailpit")
+	os.MkdirAll(mp, 0o755)
 	h, _ := htpasswd.HashPassword("crew-password")
-	os.WriteFile(filepath.Join(dir, "users.auth"), []byte("crew:"+h+"\nmamber:"+h+"\n"), 0o600)
-	os.WriteFile(filepath.Join(dir, "smtp.auth"), []byte("gitea:"+h+"\n"), 0o600)
-	os.WriteFile(filepath.Join(dir, "tags.yaml"), []byte("filters:\n    - match: from:a@b.c\n      tags: A\n"), 0o644)
-	env := "MP_DATABASE=" + filepath.Join(dir, "mailpit.db") + "\n" +
-		"MP_UI_AUTH_FILE=" + filepath.Join(dir, "users.auth") + "\n" +
-		"MP_POP3_AUTH_FILE=" + filepath.Join(dir, "users.auth") + "\n" +
-		"MP_SMTP_AUTH_FILE=" + filepath.Join(dir, "smtp.auth") + "\n" +
-		"MP_TAGS_CONFIG=" + filepath.Join(dir, "tags.yaml") + "\n"
-	os.WriteFile(filepath.Join(dir, "mailpit.ini"), []byte(env), 0o644)
-
-	rs = &fakeRestarter{fail: func(int) error { return nil }}
-	var readyErr error
-	ready = &readyErr
-	m = New(Options{
-		EnvFile:     filepath.Join(dir, "mailpit.ini"),
-		ManagedDirs: []string{dir},
-		BackupDir:   filepath.Join(dir, "backups"),
-		Keep:        2,
-		Restarter:   rs,
-		Ready:       fakeReady{err: func() error { return *ready }},
-		Timeout:     5 * time.Second,
-		StableFor:   10 * time.Millisecond,
-		ServiceUser: "crew",
+	os.WriteFile(filepath.Join(mp, "ui.auth"), []byte("crew:"+h+"\n"), 0o600)
+	os.WriteFile(filepath.Join(mp, "tags.yaml"), []byte("filters: []\n"), 0o644)
+	os.WriteFile(filepath.Join(mp, "mailpit.ini"), []byte(
+		"MP_DATABASE="+filepath.Join(mp, "mailpit.db")+"\n"+
+			"MP_UI_AUTH_FILE="+filepath.Join(mp, "ui.auth")+"\n"+
+			"MP_TAGS_CONFIG="+filepath.Join(mp, "tags.yaml")+"\n"), 0o600)
+	rs := &fakeRestarter{fail: func(int) error { return nil }}
+	m := New(Options{
+		EnvFile: filepath.Join(mp, "mailpit.ini"), ManagedDir: mp,
+		BackupDir: filepath.Join(dir, "data", "backups"), ActiveDir: filepath.Join(dir, "data", "active"),
+		Keep: 3, Restarter: rs, Ready: fakeReady{}, Timeout: 5 * time.Second, StableFor: 10 * time.Millisecond,
+		ServiceUser: "crew", Locked: map[string]string{"MP_DATABASE": filepath.Join(mp, "mailpit.db"), "MP_WEBROOT": ""},
 	})
-	return
+	if err := m.SnapshotActive(); err != nil {
+		t.Fatal(err)
+	}
+	return mp, m, rs
 }
 
-func TestFilesDiscovery(t *testing.T) {
-	dir, m, _, _ := setup(t)
+func TestFiles(t *testing.T) {
+	mp, m, _ := setup(t)
 	files := m.Files()
-	if len(files) != 4 {
+	if len(files) != 3 || files[1].Kind != KindAuth || files[2].Kind != KindTags {
 		t.Fatalf("files: %+v", files)
 	}
-	ui := files[1]
-	if ui.Path != filepath.Join(dir, "users.auth") || len(ui.Uses) != 2 {
-		t.Fatalf("shared UI/POP3 file not merged: %+v", ui)
-	}
-	if !strings.Contains(ui.Label, "Web UI & API + POP3") {
-		t.Fatalf("label: %s", ui.Label)
-	}
-	for _, f := range files {
-		if !f.Writable || !f.Exists {
-			t.Fatalf("file state: %+v", f)
-		}
+	if !strings.Contains(files[1].Label, "Web UI") || files[2].Path != filepath.Join(mp, "tags.yaml") {
+		t.Fatalf("labels: %+v", files)
 	}
 }
 
-func TestApplySuccess(t *testing.T) {
-	dir, m, rs, _ := setup(t)
-	f, _ := m.FileByID("env")
-	data, _, _ := m.Read(f)
-	newData := append(data, []byte("MP_MAX_MESSAGES=2000\n")...)
-	if err := m.Stage(f, newData); err != nil {
+func TestSaveDoesNotRestart(t *testing.T) {
+	mp, m, rs := setup(t)
+	env := filepath.Join(mp, "mailpit.ini")
+	data, base, _ := m.Read(env)
+	if err := m.Save(KindEnv, env, append(data, []byte("MP_MAX_AGE=30d\n")...), base); err != nil {
 		t.Fatal(err)
 	}
-	if m.PendingCount() != 1 {
-		t.Fatal("not staged")
+	if rs.calls != 0 {
+		t.Fatal("save restarted Mailpit")
 	}
-	// disk unchanged before apply
-	if disk, _ := os.ReadFile(f.Path); string(disk) != string(data) {
-		t.Fatal("disk changed before apply")
+	p := m.Pending()
+	if len(p) != 1 || p[0].File.Kind != KindEnv {
+		t.Fatalf("pending: %+v", p)
 	}
-	res, err := m.Apply(context.Background(), "admin")
-	if err != nil {
-		t.Fatal(err)
+	entries, _ := os.ReadDir(m.opts.BackupDir)
+	if len(entries) != 1 {
+		t.Fatal("no backup of the old file")
 	}
-	if !res.OK || rs.calls != 1 {
-		t.Fatalf("result %+v calls %d", res, rs.calls)
-	}
-	if disk, _ := os.ReadFile(f.Path); string(disk) != string(newData) {
-		t.Fatal("file not written")
-	}
-	if m.PendingCount() != 0 {
-		t.Fatal("staged change not cleared")
-	}
-	if _, err := os.Stat(filepath.Join(dir, "backups", res.BackupID, "manifest.json")); err != nil {
-		t.Fatal("no backup manifest")
+	// a second save from the old base is a conflict
+	if err := m.Save(KindEnv, env, data, base); !errors.Is(err, ErrConflict) {
+		t.Fatalf("want conflict, got %v", err)
 	}
 }
 
-func TestApplyRollbackOnNotReady(t *testing.T) {
-	_, m, rs, ready := setup(t)
-	f, _ := m.FileByID("env")
-	orig, _, _ := m.Read(f)
-	m.Stage(f, append(orig, []byte("MP_LABEL=broken\n")...))
-	calls := 0
-	rs.fail = func(int) error { return nil }
-	*ready = errors.New("not ready")
-	m.opts.Ready = fakeReady{err: func() error {
-		calls++
-		if calls == 1 {
-			return errors.New("not ready")
+func TestSaveValidates(t *testing.T) {
+	mp, m, _ := setup(t)
+	env := filepath.Join(mp, "mailpit.ini")
+	data, _, _ := m.Read(env)
+	var ve *ValidationError
+	if err := m.Save(KindEnv, env, append(data, []byte("MP_WEBROOT=/x\n")...), ""); !errors.As(err, &ve) {
+		t.Fatalf("locked key accepted: %v", err)
+	}
+	if err := m.Save(KindAuth, filepath.Join(mp, "ui.auth"), []byte("other:$2a$10$x\n"), ""); !errors.As(err, &ve) {
+		t.Fatalf("removing the service account accepted: %v", err)
+	}
+	if err := m.Save(KindTags, filepath.Join(mp, "tags.yaml"), []byte("tags: x\n"), ""); !errors.As(err, &ve) {
+		t.Fatalf("bad tags accepted: %v", err)
+	}
+	if err := m.Save(KindTags, "/etc/passwd", []byte("filters: []\n"), ""); err == nil {
+		t.Fatal("wrote outside the managed directory")
+	}
+}
+
+func TestRestartSuccessMakesActive(t *testing.T) {
+	mp, m, rs := setup(t)
+	env := filepath.Join(mp, "mailpit.ini")
+	data, base, _ := m.Read(env)
+	m.Save(KindEnv, env, append(data, []byte("MP_LABEL=x\n")...), base)
+	started := false
+	m.opts.Started = func() { started = true }
+	if err := m.Restart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rs.calls != 1 || !started || len(m.Pending()) != 0 || m.Failure() != nil {
+		t.Fatalf("calls %d started %v pending %d", rs.calls, started, len(m.Pending()))
+	}
+}
+
+func TestRestartFailureKeepsFilesThenRollback(t *testing.T) {
+	mp, m, rs := setup(t)
+	env := filepath.Join(mp, "mailpit.ini")
+	orig, base, _ := m.Read(env)
+	broken := append(append([]byte(nil), orig...), []byte("MP_LABEL=breaks\n")...)
+	m.Save(KindEnv, env, broken, base)
+	rs.fail = func(call int) error {
+		if call == 1 {
+			return errors.New("bind: address already in use")
 		}
 		return nil
-	}}
-	res, err := m.Apply(context.Background(), "admin")
+	}
+	if err := m.Restart(context.Background()); err == nil {
+		t.Fatal("restart error not returned")
+	}
+	f := m.Failure()
+	if f == nil || !strings.Contains(f.Error, "address already in use") || len(f.LogTail) == 0 {
+		t.Fatalf("failure: %+v", f)
+	}
+	if now, _ := os.ReadFile(env); string(now) != string(broken) {
+		t.Fatal("files rolled back without asking")
+	}
+	restored, err := m.Rollback(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.OK || !res.RolledBack {
-		t.Fatalf("want rolled back failure: %+v", res)
+	if now, _ := os.ReadFile(env); string(now) != string(orig) || len(restored) != 1 {
+		t.Fatalf("not restored: %v", restored)
 	}
-	if rs.calls != 2 {
-		t.Fatalf("restart calls: %d", rs.calls)
-	}
-	if disk, _ := os.ReadFile(f.Path); string(disk) != string(orig) {
-		t.Fatalf("not restored:\n%s", disk)
-	}
-	if m.PendingCount() != 1 {
-		t.Fatal("staged change should stay after failure")
-	}
-	if len(res.LogTail) == 0 {
-		t.Fatal("no log tail")
+	if m.Failure() != nil || len(m.Pending()) != 0 || rs.calls != 2 {
+		t.Fatalf("after rollback: failure %v pending %d calls %d", m.Failure(), len(m.Pending()), rs.calls)
 	}
 }
 
-func TestApplyRollbackOnCrashAfterReady(t *testing.T) {
-	_, m, rs, _ := setup(t)
-	f, _ := m.FileByID("env")
-	orig, _, _ := m.Read(f)
-	m.Stage(f, append(orig, []byte("MP_LABEL=crashes\n")...))
-	calls := 0
-	m.opts.Ready = readyFunc{func() time.Duration {
-		calls++
-		if calls == 1 {
-			return 0 // supervisor restarted it: uptime reset
-		}
-		return time.Hour
-	}}
-	res, err := m.Apply(context.Background(), "admin")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.OK || !res.RolledBack || !strings.Contains(res.Error, "restarted again") {
-		t.Fatalf("want rollback, got %+v", res)
-	}
-	if rs.calls != 2 {
-		t.Fatalf("restart calls: %d", rs.calls)
-	}
-}
-
-type readyFunc struct{ up func() time.Duration }
-
-func (r readyFunc) WaitReady(context.Context) error               { return nil }
-func (r readyFunc) Uptime(context.Context) (time.Duration, error) { return r.up(), nil }
-
-func TestApplyRefusesInvalid(t *testing.T) {
-	_, m, rs, _ := setup(t)
-	f, _ := m.FileByID("env")
-	orig, _, _ := m.Read(f)
-	m.Stage(f, append(orig, []byte("MP_MAX_AGE=forever\n")...))
-	_, err := m.Apply(context.Background(), "admin")
+func TestRestartRefusesInvalidFiles(t *testing.T) {
+	mp, m, rs := setup(t)
+	os.WriteFile(filepath.Join(mp, "tags.yaml"), []byte("nonsense: [\n"), 0o644) // hand edit
 	var ve *ValidationError
-	if !errors.As(err, &ve) {
+	if err := m.Restart(context.Background()); !errors.As(err, &ve) {
 		t.Fatalf("want validation error, got %v", err)
 	}
 	if rs.calls != 0 {
-		t.Fatal("restarted despite invalid config")
+		t.Fatal("restarted with invalid files")
 	}
 }
 
-func TestServiceAccountProtected(t *testing.T) {
-	_, m, _, _ := setup(t)
-	var ui File
-	for _, f := range m.Files() {
-		if f.Kind == KindAuth && len(f.Uses) == 2 {
-			ui = f
+func TestCrashAfterReady(t *testing.T) {
+	_, m, _ := setup(t)
+	m.opts.Ready = fakeReady{up: func() time.Duration { return 0 }}
+	err := m.Restart(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "restarted again") {
+		t.Fatalf("want crash detection, got %v", err)
+	}
+}
+
+func TestHandEditIsPending(t *testing.T) {
+	mp, m, _ := setup(t)
+	f, _ := os.OpenFile(filepath.Join(mp, "mailpit.ini"), os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString("MP_LABEL=hand\n")
+	f.Close()
+	if len(m.Pending()) != 1 {
+		t.Fatal("hand edit not detected")
+	}
+}
+
+func TestBackupsPruned(t *testing.T) {
+	mp, m, _ := setup(t)
+	env := filepath.Join(mp, "mailpit.ini")
+	for i := 0; i < 6; i++ {
+		data, base, _ := m.Read(env)
+		if err := m.Save(KindEnv, env, append(data, []byte("MP_LABEL=x"+string(rune('a'+i))+"\n")...), base); err != nil {
+			t.Fatal(err)
 		}
 	}
-	data, _, _ := m.Read(ui)
-	hf := htpasswd.Parse(data)
-	hf.Delete("crew")
-	m.Stage(ui, hf.Bytes())
-	probs := m.Validate()
-	if len(probs) == 0 || !strings.Contains(strings.Join(probs, ";"), "service account") {
-		t.Fatalf("problems: %v", probs)
-	}
-}
-
-func TestConflict(t *testing.T) {
-	_, m, rs, _ := setup(t)
-	f, _ := m.FileByID("tags")
-	m.Stage(f, []byte("filters:\n    - match: x\n      tags: Y\n"))
-	os.WriteFile(f.Path, []byte("filters: []\n"), 0o644) // edited by hand meanwhile
-	if _, err := m.Apply(context.Background(), "admin"); err == nil || !strings.Contains(err.Error(), "changed on disk") {
-		t.Fatalf("want conflict, got %v", err)
-	}
-	if rs.calls != 0 {
-		t.Fatal("restarted on conflict")
-	}
-}
-
-func TestStageOutsideManagedDir(t *testing.T) {
-	_, m, _, _ := setup(t)
-	f := File{Kind: KindAuth, Path: "/etc/passwd", Writable: m.writable("/etc/passwd")}
-	if err := m.Stage(f, []byte("x")); err == nil {
-		t.Fatal("staged a file outside managed dirs")
-	}
-}
-
-func TestStageSameContentUnstages(t *testing.T) {
-	_, m, _, _ := setup(t)
-	f, _ := m.FileByID("tags")
-	orig, _, _ := m.Read(f)
-	m.Stage(f, []byte("filters: []\n"))
-	m.Stage(f, orig)
-	if m.PendingCount() != 0 {
-		t.Fatal("identical content still staged")
+	entries, _ := os.ReadDir(m.opts.BackupDir)
+	if len(entries) != 3 {
+		t.Fatalf("backups kept: %d", len(entries))
 	}
 }
 
 func TestMask(t *testing.T) {
-	out := Mask(KindAuth, []byte("gitea:$2a$10$secrethash\n# c\n"))
-	if strings.Contains(out, "secrethash") || !strings.Contains(out, "gitea:<bcrypt ") {
+	if out := Mask(KindAuth, []byte("gitea:$2a$10$secrethash\n")); strings.Contains(out, "secrethash") {
 		t.Fatalf("auth mask: %q", out)
 	}
-	out = Mask(KindEnv, []byte("MP_SMTP_RELAY_PASSWORD=hunter2\nMP_LABEL=x\n"))
-	if strings.Contains(out, "hunter2") || !strings.Contains(out, "MP_LABEL=x") {
+	if out := Mask(KindEnv, []byte("MP_SMTP_RELAY_PASSWORD=hunter2\nMP_LABEL=x\n")); strings.Contains(out, "hunter2") || !strings.Contains(out, "MP_LABEL=x") {
 		t.Fatalf("env mask: %q", out)
+	}
+	if out := Mask(KindRelay, []byte("host: x\npassword: hunter2\n")); strings.Contains(out, "hunter2") {
+		t.Fatalf("relay mask: %q", out)
 	}
 }
 
-func TestPrune(t *testing.T) {
-	_, m, _, _ := setup(t)
-	f, _ := m.FileByID("env")
-	for i := 0; i < 4; i++ {
-		data, _, _ := m.Read(f)
-		m.Stage(f, append(data, []byte("MP_LABEL=x"+string(rune('a'+i))+"\n")...))
-		if _, err := m.Apply(context.Background(), "admin"); err != nil {
-			t.Fatal(err)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	entries, _ := os.ReadDir(m.opts.BackupDir)
-	if len(entries) != 2 {
-		t.Fatalf("backups kept: %d", len(entries))
+func TestRepairLocked(t *testing.T) {
+	mp, m, _ := setup(t)
+	env := filepath.Join(mp, "mailpit.ini")
+	data, _ := os.ReadFile(env)
+	os.WriteFile(env, append(data, []byte("MP_WEBROOT=/x\n")...), 0o600)
+	changed, err := m.RepairLocked()
+	if err != nil || len(changed) != 1 || changed[0] != "MP_WEBROOT" {
+		t.Fatalf("changed %v err %v", changed, err)
 	}
 }

@@ -1,6 +1,8 @@
-// Package apply stages changes to Mailpit's files and applies them safely:
-// validate, back up, write atomically, restart, health check and roll back
-// on failure.
+// Package apply saves Mailpit's configuration files and restarts Mailpit on
+// request. Saving validates, backs up and writes a file; it does not
+// restart. Crew remembers the files Mailpit last started with ("active") so
+// it can show what is saved but not active yet, and roll back to them when
+// a restart fails.
 package apply
 
 import (
@@ -25,7 +27,7 @@ import (
 	"github.com/mddanish/mailpit-crew/internal/fsutil"
 	"github.com/mddanish/mailpit-crew/internal/htpasswd"
 	"github.com/mddanish/mailpit-crew/internal/restart"
-	"github.com/mddanish/mailpit-crew/internal/tagsfile"
+	"github.com/mddanish/mailpit-crew/internal/verify"
 )
 
 // Kind is the type of a managed file.
@@ -33,13 +35,36 @@ type Kind string
 
 // Managed file kinds.
 const (
-	KindEnv  Kind = "env"
-	KindAuth Kind = "auth"
-	KindTags Kind = "tags"
+	KindEnv     Kind = "env"
+	KindAuth    Kind = "auth"
+	KindTags    Kind = "tags"
+	KindRelay   Kind = "relay"
+	KindForward Kind = "forward"
 )
 
-// authKeys are the env keys that point to htpasswd files, in display order.
-var authKeys = []string{"MP_UI_AUTH_FILE", "MP_SMTP_AUTH_FILE", "MP_POP3_AUTH_FILE", "MP_SEND_API_AUTH_FILE"}
+// fileKeys maps env keys to the kind of file they point to, in display order.
+var fileKeys = []struct {
+	Key  string
+	Kind Kind
+}{
+	{"MP_UI_AUTH_FILE", KindAuth},
+	{"MP_SMTP_AUTH_FILE", KindAuth},
+	{"MP_POP3_AUTH_FILE", KindAuth},
+	{"MP_SEND_API_AUTH_FILE", KindAuth},
+	{"MP_TAGS_CONFIG", KindTags},
+	{"MP_SMTP_RELAY_CONFIG", KindRelay},
+	{"MP_SMTP_FORWARD_CONFIG", KindForward},
+}
+
+// KeyKind returns the file kind an env key points to.
+func KeyKind(key string) (Kind, bool) {
+	for _, f := range fileKeys {
+		if f.Key == key {
+			return f.Kind, true
+		}
+	}
+	return "", false
+}
 
 // File is one managed Mailpit file.
 type File struct {
@@ -48,7 +73,7 @@ type File struct {
 	Path     string
 	Label    string
 	Uses     []string // env keys that point to this file
-	Writable bool     // inside a managed directory
+	Writable bool     // inside the managed directory
 	Exists   bool
 }
 
@@ -61,10 +86,10 @@ type Readiness interface {
 
 // Options configures a Manager.
 type Options struct {
-	EnvFile     string            // Mailpit env file, may be empty
-	Overrides   map[string]string // env key -> path override
-	ManagedDirs []string          // Crew only writes inside these
+	EnvFile     string
+	ManagedDir  string // Crew only writes inside this directory
 	BackupDir   string
+	ActiveDir   string // copy of the files Mailpit last started with
 	Keep        int
 	Restarter   restart.Restarter
 	Ready       Readiness
@@ -72,47 +97,33 @@ type Options struct {
 	StableFor   time.Duration // Mailpit must stay up this long after a restart (default 5s)
 	ServiceUser string        // Crew's Mailpit API account, must stay in the UI auth file
 	// Locked env keys and their required values ("" = must not be set).
-	// Used in managed mode for settings Crew depends on.
 	Locked map[string]string
-	Log    *slog.Logger
+	// Extra env checks (for example port clashes with Crew).
+	Extra func(map[string]string) []catalog.FieldError
+	// Started is called after Mailpit started successfully.
+	Started func()
+	Log     *slog.Logger
 }
 
-type staged struct {
-	file        File
-	base        []byte
-	baseExisted bool
-	content     []byte
+// Failure describes a restart that did not bring Mailpit up.
+type Failure struct {
+	Time    time.Time
+	Error   string
+	LogTail []string
 }
 
-// Result describes one apply run.
-type Result struct {
-	Time          time.Time
-	User          string
-	OK            bool
-	Files         []string
-	Error         string
-	RolledBack    bool
-	RollbackError string
-	BackupID      string
-	LogTail       []string
-}
-
-// Manager holds staged changes.
+// Manager saves files and restarts Mailpit.
 type Manager struct {
-	opts     Options
-	mu       sync.Mutex
-	staged   map[string]*staged // by path
-	applying sync.Mutex
-	last     *Result
+	opts      Options
+	mu        sync.Mutex // file writes and active snapshot
+	restartMu sync.Mutex // one restart, rollback or version switch at a time
+	failure   *Failure
 }
-
-// ErrNoEnvFile is returned when no Mailpit env file is configured.
-var ErrNoEnvFile = errors.New("no Mailpit env file configured")
 
 // New returns a Manager.
 func New(opts Options) *Manager {
 	if opts.Keep < 1 {
-		opts.Keep = 20
+		opts.Keep = 50
 	}
 	if opts.Log == nil {
 		opts.Log = slog.Default()
@@ -120,123 +131,97 @@ func New(opts Options) *Manager {
 	if opts.StableFor == 0 {
 		opts.StableFor = 5 * time.Second
 	}
-	if opts.EnvFile != "" {
-		if abs, err := filepath.Abs(opts.EnvFile); err == nil {
-			opts.EnvFile = abs
-		}
-	}
-	return &Manager{opts: opts, staged: map[string]*staged{}}
+	return &Manager{opts: opts}
 }
 
 // ServiceUser returns the protected Mailpit API account name.
 func (m *Manager) ServiceUser() string { return m.opts.ServiceUser }
 
+// Locked returns the locked env keys.
+func (m *Manager) Locked() map[string]string { return m.opts.Locked }
+
+// EnvPath returns the Mailpit env file path.
+func (m *Manager) EnvPath() string { return m.opts.EnvFile }
+
 func (m *Manager) writable(path string) bool {
-	for _, d := range m.opts.ManagedDirs {
-		rel, err := filepath.Rel(d, path)
-		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return true
-		}
-	}
-	return false
+	rel, err := filepath.Rel(m.opts.ManagedDir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-func fileID(kind Kind, path string) string {
-	if kind == KindEnv || kind == KindTags {
-		return string(kind)
+// FileID returns the stable ID of a managed file.
+func FileID(kind Kind, path string) string {
+	if kind == KindAuth {
+		s := sha256.Sum256([]byte(path))
+		return "auth-" + hex.EncodeToString(s[:4])
 	}
-	s := sha256.Sum256([]byte(path))
-	return "auth-" + hex.EncodeToString(s[:4])
+	return string(kind)
 }
 
-// readLocked returns the working content of path (staged or disk).
-func (m *Manager) readLocked(path string) ([]byte, bool, error) {
-	if s, ok := m.staged[path]; ok {
-		return append([]byte(nil), s.content...), true, nil
+func label(kind Kind, uses []string) string {
+	switch kind {
+	case KindEnv:
+		return "Mailpit settings"
+	case KindTags:
+		return "Tag rules"
+	case KindRelay:
+		return "SMTP relay"
+	case KindForward:
+		return "SMTP forward"
 	}
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, false, nil
+	var parts []string
+	for _, k := range uses {
+		key, _ := catalog.Lookup(k)
+		parts = append(parts, key.AuthFile)
 	}
-	return data, false, err
+	return strings.Join(parts, " + ") + " accounts"
 }
 
-// workingEnvLocked returns the working env file, or nil when not configured.
-func (m *Manager) workingEnvLocked() (*envfile.File, error) {
-	if m.opts.EnvFile == "" {
-		return nil, ErrNoEnvFile
-	}
-	data, _, err := m.readLocked(m.opts.EnvFile)
+// Env returns the Mailpit env file as it is on disk.
+func (m *Manager) Env() (*envfile.File, error) {
+	data, err := os.ReadFile(m.opts.EnvFile)
 	if err != nil {
 		return nil, err
 	}
 	return envfile.Parse(data), nil
 }
 
-func (m *Manager) resolve(env map[string]string, key string) string {
-	p := env[key]
-	if o := m.opts.Overrides[key]; o != "" {
-		p = o
-	}
-	if p == "" || !filepath.IsAbs(p) {
-		// relative paths depend on Mailpit's working directory; validation
-		// rejects them, so they are not managed
-		return ""
-	}
-	return filepath.Clean(p)
-}
-
-func (m *Manager) filesLocked() []File {
-	env := map[string]string{}
-	var out []File
-	if ef, err := m.workingEnvLocked(); err == nil {
-		env = ef.Map()
-		out = append(out, m.newFile(KindEnv, m.opts.EnvFile, "Mailpit settings", nil))
-	}
+func filesFromEnv(m *Manager, env map[string]string) []File {
+	out := []File{m.newFile(KindEnv, m.opts.EnvFile, nil)}
 	byPath := map[string]int{}
-	for _, k := range authKeys {
-		p := m.resolve(env, k)
-		if p == "" {
+	for _, fk := range fileKeys {
+		p := env[fk.Key]
+		if p == "" || !filepath.IsAbs(p) {
 			continue
 		}
-		if i, ok := byPath[p]; ok {
-			out[i].Uses = append(out[i].Uses, k)
+		p = filepath.Clean(p)
+		if i, ok := byPath[p]; ok && out[i].Kind == fk.Kind {
+			out[i].Uses = append(out[i].Uses, fk.Key)
 			continue
 		}
 		byPath[p] = len(out)
-		out = append(out, m.newFile(KindAuth, p, "Password file", []string{k}))
+		out = append(out, m.newFile(fk.Kind, p, []string{fk.Key}))
 	}
 	for i := range out {
-		if out[i].Kind == KindAuth {
-			var labels []string
-			for _, k := range out[i].Uses {
-				key, _ := catalog.Lookup(k)
-				labels = append(labels, key.AuthFile)
-			}
-			out[i].Label = strings.Join(labels, " + ") + " accounts"
-		}
-	}
-	if p := m.resolve(env, "MP_TAGS_CONFIG"); p != "" {
-		out = append(out, m.newFile(KindTags, p, "Tag rules", []string{"MP_TAGS_CONFIG"}))
+		out[i].Label = label(out[i].Kind, out[i].Uses)
 	}
 	return out
 }
 
-func (m *Manager) newFile(kind Kind, path, label string, uses []string) File {
-	f := File{ID: fileID(kind, path), Kind: kind, Path: path, Label: label, Uses: uses, Writable: m.writable(path)}
-	if _, ok := m.staged[path]; ok {
-		f.Exists = true
-	} else if _, err := os.Stat(path); err == nil {
+func (m *Manager) newFile(kind Kind, path string, uses []string) File {
+	f := File{ID: FileID(kind, path), Kind: kind, Path: path, Uses: uses, Writable: m.writable(path)}
+	if _, err := os.Stat(path); err == nil {
 		f.Exists = true
 	}
 	return f
 }
 
-// Files returns all managed files, based on the working env file.
+// Files returns all managed files referenced by the env file on disk.
 func (m *Manager) Files() []File {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.filesLocked()
+	env := map[string]string{}
+	if ef, err := m.Env(); err == nil {
+		env = ef.Map()
+	}
+	return filesFromEnv(m, env)
 }
 
 // FileByID finds a managed file.
@@ -249,425 +234,392 @@ func (m *Manager) FileByID(id string) (File, bool) {
 	return File{}, false
 }
 
-// Read returns the working content of a managed file and whether it is staged.
-func (m *Manager) Read(f File) ([]byte, bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.readLocked(f.Path)
+// Hash is the content hash used to detect concurrent edits.
+func Hash(data []byte) string { return fsutil.Hash(data) }
+
+// Read returns a file's content and hash ("" content for a missing file).
+func (m *Manager) Read(path string) ([]byte, string, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, Hash(nil), nil
+	}
+	return data, Hash(data), err
 }
 
-// Env returns the working Mailpit env file.
-func (m *Manager) Env() (*envfile.File, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.workingEnvLocked()
-}
-
-// DiskEnv returns the Mailpit env file as it is on disk (what Mailpit runs with).
-func (m *Manager) DiskEnv() (*envfile.File, error) {
-	if m.opts.EnvFile == "" {
-		return nil, ErrNoEnvFile
-	}
-	data, err := os.ReadFile(m.opts.EnvFile)
-	if err != nil {
-		return nil, err
-	}
-	return envfile.Parse(data), nil
-}
-
-// Stage records new content for a managed file. Content equal to the disk
-// version removes the staged change.
-func (m *Manager) Stage(f File, content []byte) error {
-	if !f.Writable {
-		return fmt.Errorf("%s is outside the managed directories and cannot be changed", f.Path)
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	s, ok := m.staged[f.Path]
-	if !ok {
-		data, err := os.ReadFile(f.Path)
-		existed := err == nil
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
+// Verify checks content as if it replaced the file of the given kind.
+func (m *Manager) Verify(kind Kind, path string, content []byte) []verify.Issue {
+	switch kind {
+	case KindEnv:
+		return verify.Env(content, verify.EnvOptions{
+			Locked: m.opts.Locked,
+			Extra:  m.opts.Extra,
+		})
+	case KindAuth:
+		svc := ""
+		if path == m.uiAuthPath() {
+			svc = m.opts.ServiceUser
 		}
-		s = &staged{file: f, base: data, baseExisted: existed}
+		return verify.Auth(content, svc)
+	case KindTags:
+		return verify.Tags(content)
+	case KindRelay:
+		return verify.Relay(content)
+	case KindForward:
+		return verify.Forward(content)
 	}
-	if s.baseExisted && bytes.Equal(content, s.base) {
-		delete(m.staged, f.Path)
-		return nil
-	}
-	s.content = append([]byte(nil), content...)
-	m.staged[f.Path] = s
 	return nil
 }
 
-// Discard drops the staged change of one file.
-func (m *Manager) Discard(path string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.staged, path)
+func (m *Manager) uiAuthPath() string {
+	if ef, err := m.Env(); err == nil {
+		if v, _ := ef.Get("MP_UI_AUTH_FILE"); v != "" {
+			return filepath.Clean(v)
+		}
+	}
+	return ""
 }
 
-// DiscardAll drops all staged changes.
-func (m *Manager) DiscardAll() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.staged = map[string]*staged{}
+// ErrConflict is returned when a file changed after the editor loaded it.
+var ErrConflict = errors.New("the file changed since you opened it; reload the page and make your change again")
+
+// ValidationError lists problems that stopped a save or restart.
+type ValidationError struct{ Issues []verify.Issue }
+
+func (e *ValidationError) Error() string {
+	var s []string
+	for _, i := range e.Issues {
+		s = append(s, i.String())
+	}
+	return "validation failed: " + strings.Join(s, "; ")
 }
 
-// PendingCount returns the number of staged files.
-func (m *Manager) PendingCount() int {
+// Save validates and writes one file. base is the hash the editor started
+// from ("" skips the check). Mailpit is not restarted.
+func (m *Manager) Save(kind Kind, path string, content []byte, base string) error {
+	if !m.writable(path) {
+		return fmt.Errorf("%s is outside %s and cannot be changed", path, m.opts.ManagedDir)
+	}
+	if errs := verify.Errors(m.Verify(kind, path, content)); len(errs) > 0 {
+		return &ValidationError{Issues: errs}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return len(m.staged)
+	cur, err := os.ReadFile(path)
+	existed := err == nil
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if base != "" && Hash(cur) != base {
+		return ErrConflict
+	}
+	if existed && bytes.Equal(cur, content) {
+		return nil
+	}
+	if existed {
+		if err := m.backup(path, cur); err != nil {
+			return fmt.Errorf("backup failed, nothing changed: %w", err)
+		}
+	}
+	return fsutil.WriteAtomic(path, content, fileMode(kind))
 }
 
-// Change is one staged file with a masked diff.
+// fileMode is the mode for files Crew creates. Password files and files that
+// can hold passwords stay private.
+func fileMode(k Kind) os.FileMode {
+	switch k {
+	case KindAuth, KindRelay, KindForward, KindEnv:
+		return 0o600
+	}
+	return 0o644
+}
+
+func (m *Manager) backup(path string, data []byte) error {
+	if err := os.MkdirAll(m.opts.BackupDir, 0o700); err != nil {
+		return err
+	}
+	name := time.Now().UTC().Format("20060102-150405.000000") + "-" + filepath.Base(path)
+	if err := os.WriteFile(filepath.Join(m.opts.BackupDir, name), data, 0o600); err != nil {
+		return err
+	}
+	m.prune()
+	return nil
+}
+
+func (m *Manager) prune() {
+	entries, err := os.ReadDir(m.opts.BackupDir)
+	if err != nil {
+		return
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	for len(names) > m.opts.Keep {
+		_ = os.Remove(filepath.Join(m.opts.BackupDir, names[0]))
+		names = names[1:]
+	}
+}
+
+// --- active snapshot ---
+
+type activeEntry struct {
+	Path    string `json:"path"`
+	Kind    Kind   `json:"kind"`
+	Stored  string `json:"stored"`
+	Existed bool   `json:"existed"`
+	Hash    string `json:"hash"`
+}
+
+type activeManifest struct {
+	Time  time.Time     `json:"time"`
+	Files []activeEntry `json:"files"`
+}
+
+func (m *Manager) loadActive() (*activeManifest, error) {
+	data, err := os.ReadFile(filepath.Join(m.opts.ActiveDir, "manifest.json"))
+	if err != nil {
+		return nil, err
+	}
+	var a activeManifest
+	return &a, json.Unmarshal(data, &a)
+}
+
+// HasActive reports whether an active snapshot exists.
+func (m *Manager) HasActive() bool {
+	_, err := m.loadActive()
+	return err == nil
+}
+
+// SnapshotActive records the current files as the ones Mailpit runs with.
+func (m *Manager) SnapshotActive() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.snapshotLocked()
+}
+
+func (m *Manager) snapshotLocked() error {
+	tmp := m.opts.ActiveDir + ".tmp"
+	_ = os.RemoveAll(tmp)
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		return err
+	}
+	man := activeManifest{Time: time.Now().UTC()}
+	for i, f := range m.Files() {
+		data, err := os.ReadFile(f.Path)
+		e := activeEntry{Path: f.Path, Kind: f.Kind, Hash: Hash(nil)}
+		if err == nil {
+			e.Existed, e.Hash, e.Stored = true, Hash(data), fmt.Sprintf("file-%d", i)
+			if err := os.WriteFile(filepath.Join(tmp, e.Stored), data, 0o600); err != nil {
+				return err
+			}
+		}
+		man.Files = append(man.Files, e)
+	}
+	data, err := json.MarshalIndent(man, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "manifest.json"), data, 0o600); err != nil {
+		return err
+	}
+	_ = os.RemoveAll(m.opts.ActiveDir)
+	return os.Rename(tmp, m.opts.ActiveDir)
+}
+
+// Change is a file that differs from what Mailpit runs with.
 type Change struct {
-	File     File
-	Diff     []diff.Line
-	Conflict bool // file changed on disk since it was staged
+	File File
+	Diff []diff.Line
+	New  bool // not used by the running Mailpit at all
 }
 
-// Pending returns staged changes with secrets masked.
+// Pending lists files whose content on disk differs from the active
+// snapshot (saved in Crew or edited by hand). Secrets are masked.
 func (m *Manager) Pending() []Change {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var out []Change
-	for _, s := range m.staged {
-		disk, _ := os.ReadFile(s.file.Path)
-		out = append(out, Change{
-			File:     s.file,
-			Diff:     diff.Lines(Mask(s.file.Kind, s.base), Mask(s.file.Kind, s.content), 3),
-			Conflict: !bytes.Equal(disk, s.base),
-		})
+	act, err := m.loadActive()
+	if err != nil {
+		return nil
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].File.Path < out[j].File.Path })
+	activeByPath := map[string]activeEntry{}
+	for _, e := range act.Files {
+		activeByPath[e.Path] = e
+	}
+	var out []Change
+	for _, f := range m.Files() {
+		data, _ := os.ReadFile(f.Path)
+		a, known := activeByPath[f.Path]
+		if known && a.Hash == Hash(data) {
+			continue
+		}
+		var old []byte
+		if known && a.Existed {
+			old, _ = os.ReadFile(filepath.Join(m.opts.ActiveDir, a.Stored))
+		}
+		if !known && len(data) == 0 {
+			continue
+		}
+		out = append(out, Change{File: f, New: !known, Diff: diff.Lines(Mask(f.Kind, old), Mask(f.Kind, data), 3)})
+	}
 	return out
 }
+
+// PendingCount returns the number of files not active yet.
+func (m *Manager) PendingCount() int { return len(m.Pending()) }
 
 // Mask hides secrets in file content for display. Changed secrets still
 // show as changed because a short fingerprint is kept.
 func Mask(kind Kind, data []byte) string {
 	text := string(data)
-	switch kind {
-	case KindAuth:
-		f := htpasswd.Parse(data)
-		masked := map[string]string{}
-		for _, e := range f.Entries() {
-			masked[e.User] = e.User + ":<" + htpasswd.HashType(e.Hash) + " " + htpasswd.Fingerprint(e.Hash) + ">"
-		}
-		var b strings.Builder
-		for _, l := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
-			t := strings.TrimSpace(l)
-			if i := strings.Index(t, ":"); i > 0 {
-				if v, ok := masked[t[:i]]; ok {
-					l = v
-				}
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	if text == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, l := range lines {
+		t := strings.TrimSpace(l)
+		switch kind {
+		case KindAuth:
+			if i := strings.Index(t, ":"); i > 0 && !strings.HasPrefix(t, "#") {
+				h := t[i+1:]
+				l = t[:i] + ":<" + htpasswd.HashType(h) + " " + htpasswd.Fingerprint(h) + ">"
 			}
-			b.WriteString(l + "\n")
-		}
-		return b.String()
-	case KindEnv:
-		var b strings.Builder
-		for _, l := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
-			t := strings.TrimSpace(l)
+		case KindEnv:
 			if i := strings.Index(t, "="); i > 0 {
 				k := strings.TrimSpace(t[:i])
 				if key, ok := catalog.Lookup(k); ok && key.Sensitive {
 					l = k + "=<secret " + htpasswd.Fingerprint(t[i+1:]) + ">"
 				}
 			}
-			b.WriteString(l + "\n")
-		}
-		return b.String()
-	}
-	return text
-}
-
-// Validate checks all working files and returns problems.
-func (m *Manager) Validate() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.validateLocked()
-}
-
-func (m *Manager) validateLocked() []string {
-	var errs []string
-	ef, err := m.workingEnvLocked()
-	if err != nil && !errors.Is(err, ErrNoEnvFile) {
-		errs = append(errs, "Mailpit settings: "+err.Error())
-	}
-	if ef != nil {
-		for _, l := range ef.Invalid() {
-			errs = append(errs, fmt.Sprintf("Mailpit settings: line %d is not KEY=value", l.Number))
-		}
-		pending := func(p string) bool {
-			_, ok := m.staged[filepath.Clean(p)]
-			return ok
-		}
-		env := ef.Map()
-		for _, e := range catalog.ValidateEnvWith(env, pending) {
-			errs = append(errs, "Mailpit settings: "+e.Error())
-		}
-		for _, k := range sortedKeys(m.opts.Locked) {
-			if want := m.opts.Locked[k]; !lockedEqual(env[k], want) {
-				if want == "" {
-					errs = append(errs, fmt.Sprintf("Mailpit settings: %s is managed by Crew and must not be set", k))
-				} else {
-					errs = append(errs, fmt.Sprintf("Mailpit settings: %s is managed by Crew and must be %s", k, want))
+		case KindRelay, KindForward:
+			if i := strings.Index(t, ":"); i > 0 {
+				k := strings.TrimSpace(t[:i])
+				if k == "password" || k == "secret" {
+					l = l[:strings.Index(l, ":")+1] + " <secret " + htpasswd.Fingerprint(strings.TrimSpace(t[i+1:])) + ">"
 				}
 			}
 		}
+		b.WriteString(l + "\n")
 	}
-	for _, f := range m.filesLocked() {
-		data, _, err := m.readLocked(f.Path)
+	return b.String()
+}
+
+// Validate checks every managed file on disk.
+func (m *Manager) Validate() []verify.Issue {
+	var out []verify.Issue
+	for _, f := range m.Files() {
+		data, err := os.ReadFile(f.Path)
 		if err != nil {
-			errs = append(errs, f.Path+": "+err.Error())
+			if f.Kind != KindEnv {
+				continue // missing referenced files are reported by the env check
+			}
+			out = append(out, verify.Issue{Msg: f.Path + ": " + err.Error()})
 			continue
 		}
-		switch f.Kind {
-		case KindAuth:
-			if !f.Exists {
-				continue // reported by the env validation
-			}
-			hf := htpasswd.Parse(data)
-			for _, n := range hf.Invalid() {
-				errs = append(errs, fmt.Sprintf("%s: line %d is not user:hash", f.Path, n))
-			}
-			if len(hf.Entries()) == 0 {
-				errs = append(errs, f.Path+": has no accounts")
-			}
-			if m.opts.ServiceUser != "" && contains(f.Uses, "MP_UI_AUTH_FILE") {
-				if _, ok := hf.Get(m.opts.ServiceUser); !ok {
-					errs = append(errs, fmt.Sprintf("%s: Crew service account %q is missing (Crew would lose API access)", f.Path, m.opts.ServiceUser))
-				}
-			}
-		case KindTags:
-			if !f.Exists {
-				continue
-			}
-			for _, e := range tagsfile.ValidateBytes(data) {
-				errs = append(errs, f.Path+": "+e.Error())
-			}
+		for _, i := range verify.Errors(m.Verify(f.Kind, f.Path, data)) {
+			i.Msg = f.Label + ": " + i.Msg
+			out = append(out, i)
 		}
 	}
-	return errs
-}
-
-// Locked returns the locked env keys.
-func (m *Manager) Locked() map[string]string { return m.opts.Locked }
-
-func lockedEqual(have, want string) bool {
-	if want == "true" {
-		return catalog.IsTrue(have)
-	}
-	return have == want
-}
-
-func sortedKeys(m map[string]string) []string {
-	var out []string
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
 	return out
 }
 
-// RepairLocked sets locked values in the env file on disk. It returns the
-// keys it changed. Used at startup, before Mailpit runs.
-func (m *Manager) RepairLocked() ([]string, error) {
-	if len(m.opts.Locked) == 0 || m.opts.EnvFile == "" {
-		return nil, nil
-	}
+// --- restart and rollback ---
+
+// Failure returns the last failed restart, or nil.
+func (m *Manager) Failure() *Failure {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	data, err := os.ReadFile(m.opts.EnvFile)
-	if err != nil {
-		return nil, err
-	}
-	ef := envfile.Parse(data)
-	var changed []string
-	for _, k := range sortedKeys(m.opts.Locked) {
-		want := m.opts.Locked[k]
-		have, _ := ef.Get(k)
-		if lockedEqual(have, want) {
-			continue
-		}
-		if want == "" {
-			ef.Delete(k)
-		} else if err := ef.Set(k, want); err != nil {
-			return nil, err
-		}
-		changed = append(changed, k)
-	}
-	if len(changed) == 0 {
-		return nil, nil
-	}
-	return changed, fsutil.WriteAtomic(m.opts.EnvFile, ef.Bytes(), 0o644)
+	return m.failure
 }
 
-// Exclusive runs fn while no apply can run. It fails when one is running.
+// ErrBusy is returned when a restart or version switch is already running.
+var ErrBusy = errors.New("Mailpit is being restarted, try again in a moment")
+
+// Exclusive runs fn while no restart or rollback can run.
 func (m *Manager) Exclusive(fn func() error) error {
-	if !m.applying.TryLock() {
-		return errors.New("another apply is running")
+	if !m.restartMu.TryLock() {
+		return ErrBusy
 	}
-	defer m.applying.Unlock()
+	defer m.restartMu.Unlock()
 	return fn()
 }
 
-// RestartAndWait restarts Mailpit and waits until it is ready and stable.
-func (m *Manager) RestartAndWait(ctx context.Context) error { return m.restartAndWait(ctx) }
-
-// LogTail returns recent Mailpit output.
-func (m *Manager) LogTail() []string { return m.logTail() }
-
-func contains(l []string, s string) bool {
-	for _, x := range l {
-		if x == s {
-			return true
+// Restart checks all files, restarts Mailpit and waits until it is ready
+// and stable. On success the files become the active snapshot. On failure
+// nothing is rolled back: the error is kept until a fix or rollback.
+func (m *Manager) Restart(ctx context.Context) error {
+	return m.Exclusive(func() error {
+		if errs := m.Validate(); len(errs) > 0 {
+			return &ValidationError{Issues: errs}
 		}
-	}
-	return false
+		return m.restartLocked(ctx)
+	})
 }
 
-// LastResult returns the result of the last apply, if any.
-func (m *Manager) LastResult() *Result {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.last
-}
-
-type manifestEntry struct {
-	Path    string `json:"path"`
-	Stored  string `json:"stored"`
-	Existed bool   `json:"existed"`
-}
-
-// ErrNothingToApply is returned when there are no staged changes.
-var ErrNothingToApply = errors.New("no pending changes")
-
-// ValidationError lists problems that stopped an apply.
-type ValidationError struct{ Problems []string }
-
-func (e *ValidationError) Error() string {
-	return "validation failed: " + strings.Join(e.Problems, "; ")
-}
-
-// Apply writes all staged changes and restarts Mailpit. Validation and
-// conflict errors are returned as errors (nothing changed). Problems after
-// files were written are reported in the Result (OK=false).
-func (m *Manager) Apply(ctx context.Context, user string) (*Result, error) {
-	if !m.applying.TryLock() {
-		return nil, errors.New("another apply is running")
-	}
-	defer m.applying.Unlock()
-
-	m.mu.Lock()
-	if len(m.staged) == 0 {
-		m.mu.Unlock()
-		return nil, ErrNothingToApply
-	}
-	var conflicts []string
-	for p, s := range m.staged {
-		disk, err := os.ReadFile(p)
-		existed := err == nil
-		if existed != s.baseExisted || !bytes.Equal(disk, s.base) {
-			conflicts = append(conflicts, p)
-		}
-	}
-	if len(conflicts) > 0 {
-		m.mu.Unlock()
-		sort.Strings(conflicts)
-		return nil, fmt.Errorf("changed on disk since staging, discard and edit again: %s", strings.Join(conflicts, ", "))
-	}
-	if problems := m.validateLocked(); len(problems) > 0 {
-		m.mu.Unlock()
-		return nil, &ValidationError{Problems: problems}
-	}
-	snapshot := map[string]staged{}
-	for p, s := range m.staged {
-		snapshot[p] = *s
-	}
-	files := m.filesLocked()
-	m.mu.Unlock()
-
-	res := &Result{Time: time.Now(), User: user}
-	for p := range snapshot {
-		res.Files = append(res.Files, p)
-	}
-	sort.Strings(res.Files)
-
-	backupID, err := m.backup(files, snapshot)
-	if err != nil {
-		return nil, fmt.Errorf("backup failed, nothing changed: %w", err)
-	}
-	res.BackupID = backupID
-
-	var written []string
-	for _, p := range res.Files {
-		if err := fsutil.WriteAtomic(p, snapshot[p].content, newFileMode(snapshot[p].file.Kind)); err != nil {
-			res.Error = fmt.Sprintf("write %s: %v", p, err)
-			break
-		}
-		written = append(written, p)
-	}
-	if res.Error == "" {
-		if err := m.restartAndWait(ctx); err != nil {
-			res.Error = err.Error()
-		}
-	}
-	if res.Error == "" {
-		res.OK = true
+func (m *Manager) restartLocked(ctx context.Context) error {
+	if err := m.RestartAndWait(ctx); err != nil {
+		f := &Failure{Time: time.Now(), Error: err.Error(), LogTail: m.LogTail()}
 		m.mu.Lock()
-		for p, s := range snapshot {
-			if cur, ok := m.staged[p]; ok && bytes.Equal(cur.content, s.content) {
-				delete(m.staged, p)
-			}
-		}
-		m.last = res
+		m.failure = f
 		m.mu.Unlock()
-		m.prune()
-		m.opts.Log.Info("apply succeeded", "user", user, "files", strings.Join(res.Files, ","), "backup", backupID)
-		return res, nil
+		m.opts.Log.Error("mailpit restart failed", "error", err)
+		return err
 	}
-
-	m.opts.Log.Error("apply failed, rolling back", "user", user, "error", res.Error)
-	res.LogTail = m.logTail()
-	var rbErr []string
-	for _, p := range written {
-		s := snapshot[p]
-		if s.baseExisted {
-			if err := fsutil.WriteAtomic(p, s.base, newFileMode(s.file.Kind)); err != nil {
-				rbErr = append(rbErr, fmt.Sprintf("restore %s: %v", p, err))
-			}
-		} else if err := os.Remove(p); err != nil {
-			rbErr = append(rbErr, fmt.Sprintf("remove %s: %v", p, err))
-		}
-	}
-	if len(written) > 0 {
-		if err := m.restartAndWait(ctx); err != nil {
-			rbErr = append(rbErr, "restart after rollback: "+err.Error())
-		}
-	}
-	res.RolledBack = len(rbErr) == 0
-	res.RollbackError = strings.Join(rbErr, "; ")
 	m.mu.Lock()
-	m.last = res
+	m.failure = nil
+	err := m.snapshotLocked()
 	m.mu.Unlock()
-	return res, nil
-}
-
-// newFileMode is the mode for files Crew creates. Password files stay private.
-func newFileMode(k Kind) os.FileMode {
-	if k == KindAuth {
-		return 0o600
+	if m.opts.Started != nil {
+		m.opts.Started()
 	}
-	return 0o644
+	return err
 }
 
-func (m *Manager) restartAndWait(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, m.opts.Timeout)
+// Rollback restores the files Mailpit last started with and restarts it.
+func (m *Manager) Rollback(ctx context.Context) ([]string, error) {
+	var restored []string
+	err := m.Exclusive(func() error {
+		m.mu.Lock()
+		act, err := m.loadActive()
+		if err != nil {
+			m.mu.Unlock()
+			return errors.New("no working configuration recorded yet")
+		}
+		for _, e := range act.Files {
+			cur, _ := os.ReadFile(e.Path)
+			if Hash(cur) == e.Hash {
+				continue
+			}
+			if e.Existed {
+				data, err := os.ReadFile(filepath.Join(m.opts.ActiveDir, e.Stored))
+				if err != nil {
+					m.mu.Unlock()
+					return err
+				}
+				if len(cur) > 0 {
+					_ = m.backup(e.Path, cur)
+				}
+				if err := fsutil.WriteAtomic(e.Path, data, fileMode(e.Kind)); err != nil {
+					m.mu.Unlock()
+					return err
+				}
+				restored = append(restored, e.Path)
+			}
+		}
+		m.mu.Unlock()
+		return m.restartLocked(ctx)
+	})
+	return restored, err
+}
+
+// RestartAndWait restarts Mailpit and waits until it is ready and stable.
+func (m *Manager) RestartAndWait(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, m.opts.Timeout+m.opts.StableFor+5*time.Second)
 	defer cancel()
 	if err := m.opts.Restarter.Restart(ctx); err != nil {
 		return err
@@ -675,13 +627,9 @@ func (m *Manager) restartAndWait(ctx context.Context) error {
 	if m.opts.Ready == nil {
 		return nil
 	}
-	// give Mailpit a moment, so a failing start is not hidden by an old process
-	select {
-	case <-time.After(time.Second):
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	if err := m.opts.Ready.WaitReady(ctx); err != nil {
+	wctx, wcancel := context.WithTimeout(ctx, m.opts.Timeout)
+	defer wcancel()
+	if err := m.opts.Ready.WaitReady(wctx); err != nil {
 		return fmt.Errorf("Mailpit did not become ready within %s: %v", m.opts.Timeout, err)
 	}
 	// Mailpit can report ready and still exit a moment later (for example
@@ -701,105 +649,62 @@ func (m *Manager) restartAndWait(ctx context.Context) error {
 	return nil
 }
 
-func (m *Manager) logTail() []string {
-	lines := m.opts.Restarter.LogTail()
-	if env, err := m.DiskEnv(); err == nil {
-		if p := m.resolve(env.Map(), "MP_LOG_FILE"); p != "" {
-			lines = append(lines, tailFile(p, 20)...)
-		}
+// MarkStarted records the current files as active after Mailpit was started
+// successfully outside Restart (version switch, first start).
+func (m *Manager) MarkStarted() error {
+	m.mu.Lock()
+	m.failure = nil
+	err := m.snapshotLocked()
+	m.mu.Unlock()
+	if m.opts.Started != nil {
+		m.opts.Started()
 	}
+	return err
+}
+
+// LogTail returns recent Mailpit output.
+func (m *Manager) LogTail() []string {
+	lines := m.opts.Restarter.LogTail()
 	if len(lines) > 40 {
 		lines = lines[len(lines)-40:]
 	}
 	return lines
 }
 
-func tailFile(path string, n int) []string {
-	f, err := os.Open(path)
+// RepairLocked sets locked values in the env file on disk. It returns the
+// keys it changed. Used at startup, before Mailpit runs.
+func (m *Manager) RepairLocked() ([]string, error) {
+	if len(m.opts.Locked) == 0 {
+		return nil, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	data, err := os.ReadFile(m.opts.EnvFile)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return nil
+	ef := envfile.Parse(data)
+	var changed []string
+	keys := make([]string, 0, len(m.opts.Locked))
+	for k := range m.opts.Locked {
+		keys = append(keys, k)
 	}
-	const max = 64 * 1024
-	off := st.Size() - max
-	if off < 0 {
-		off = 0
-	}
-	buf := make([]byte, st.Size()-off)
-	if _, err := f.ReadAt(buf, off); err != nil {
-		return nil
-	}
-	lines := strings.Split(strings.TrimRight(string(buf), "\n"), "\n")
-	if off > 0 && len(lines) > 0 {
-		lines = lines[1:] // first line may be partial
-	}
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	return lines
-}
-
-func (m *Manager) backup(files []File, snapshot map[string]staged) (string, error) {
-	id := time.Now().UTC().Format("20060102-150405.000")
-	dir := filepath.Join(m.opts.BackupDir, id)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	paths := map[string]bool{}
-	for _, f := range files {
-		paths[f.Path] = true
-	}
-	for p := range snapshot {
-		paths[p] = true
-	}
-	var manifest []manifestEntry
-	i := 0
-	for p := range paths {
-		data, err := os.ReadFile(p)
-		if errors.Is(err, os.ErrNotExist) {
-			manifest = append(manifest, manifestEntry{Path: p})
+	sort.Strings(keys)
+	for _, k := range keys {
+		want := m.opts.Locked[k]
+		have, set := ef.Get(k)
+		if (want == "" && !set) || (want != "" && have == want) {
 			continue
 		}
-		if err != nil {
-			return "", err
+		if want == "" {
+			ef.Delete(k)
+		} else if err := ef.Set(k, want); err != nil {
+			return nil, err
 		}
-		stored := fmt.Sprintf("file-%d", i)
-		i++
-		if err := os.WriteFile(filepath.Join(dir, stored), data, 0o600); err != nil {
-			return "", err
-		}
-		manifest = append(manifest, manifestEntry{Path: p, Stored: stored, Existed: true})
+		changed = append(changed, k)
 	}
-	sort.Slice(manifest, func(a, b int) bool { return manifest[a].Path < manifest[b].Path })
-	data, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return "", err
+	if len(changed) == 0 {
+		return nil, nil
 	}
-	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), data, 0o600); err != nil {
-		return "", err
-	}
-	return id, nil
-}
-
-// prune removes old backups beyond the keep limit.
-func (m *Manager) prune() {
-	entries, err := os.ReadDir(m.opts.BackupDir)
-	if err != nil {
-		return
-	}
-	var dirs []string
-	for _, e := range entries {
-		if e.IsDir() {
-			dirs = append(dirs, e.Name())
-		}
-	}
-	sort.Strings(dirs)
-	for len(dirs) > m.opts.Keep {
-		_ = os.RemoveAll(filepath.Join(m.opts.BackupDir, dirs[0]))
-		dirs = dirs[1:]
-	}
+	return changed, fsutil.WriteAtomic(m.opts.EnvFile, ef.Bytes(), 0o600)
 }

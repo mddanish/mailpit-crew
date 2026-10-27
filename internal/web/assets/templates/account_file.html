@@ -1,53 +1,66 @@
 {{define "content"}}
-{{$f := .Data.File}}
+{{$d := .Data}}{{$f := $d.File}}
+<p class="muted"><a href="{{.Root}}admin/accounts">&larr; Accounts</a></p>
 <h1>{{$f.Label}}</h1>
-<p class="muted"><a href="{{.Root}}admin/accounts">Accounts</a> · <code>{{$f.Path}}</code> · {{join $f.Uses ", "}}{{if .Data.Staged}} · <span class="warn">has staged changes</span>{{end}}</p>
-{{if not $f.Writable}}<div class="flash error">This file is outside the managed directories. Crew cannot change it.</div>{{end}}
-{{if not $f.Exists}}<div class="flash info">The file does not exist yet. Adding an account creates it on apply.</div>{{end}}
-{{if .Data.Invalid}}<div class="flash error">Lines that are not <code>user:hash</code>: {{range .Data.Invalid}}{{.}} {{end}}. Fix them with a text editor.</div>{{end}}
+<p class="muted">{{$d.Note}} File: <code>{{$f.Path}}</code> · {{join $f.Uses ", "}}</p>
+{{if not $f.Writable}}<div class="flash error">This file is outside the Crew folder and cannot be changed.</div>{{end}}
+{{if $d.Invalid}}<div class="flash error">Lines that are not <code>user:hash</code>: {{range $d.Invalid}}{{.}} {{end}}</div>{{end}}
 
 <section class="card">
+  <h2>In the file</h2>
   <table>
     <thead><tr><th>Account</th><th>Hash</th><th>Notes</th><th></th></tr></thead>
     <tbody>
-    {{range .Data.Rows}}
+    {{range $d.Rows}}
     <tr>
-      <td><strong>{{.User}}</strong>{{if .Protected}} <span class="badge">Crew service account</span>{{end}}</td>
+      <td><strong>{{.User}}</strong></td>
       <td><code>{{.Type}} {{.Print}}</code></td>
-      <td>{{if .SameAs}}<span class="warn">same password hash as {{join .SameAs ", "}}</span>{{end}}{{if ne .Type "bcrypt"}} <span class="warn">weak hash type</span>{{end}}</td>
+      <td>{{if .SameAs}}<span class="warn">same password as {{join .SameAs ", "}}</span>{{end}}{{if ne .Type "bcrypt"}} <span class="warn">weak hash type</span>{{end}}</td>
       <td class="row-actions">
-        {{if and (not .Protected) $f.Writable}}
+        {{if $f.Writable}}
         <form method="post" action="{{$.Root}}admin/accounts/{{$f.ID}}/reset" class="inline">
-          <input type="hidden" name="csrf" value="{{$.CSRF}}">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="base" value="{{$d.Base}}">
           <input type="hidden" name="username" value="{{.User}}">
           <input type="password" name="password" placeholder="new password (empty = generate)" autocomplete="new-password">
-          <button type="submit">Reset</button>
+          <button type="submit" class="secondary small-btn">Reset</button>
         </form>
         <form method="post" action="{{$.Root}}admin/accounts/{{$f.ID}}/delete" class="inline" data-confirm="Delete account {{.User}}?">
-          <input type="hidden" name="csrf" value="{{$.CSRF}}">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="base" value="{{$d.Base}}">
           <input type="hidden" name="username" value="{{.User}}">
-          <button type="submit" class="danger">Delete</button>
+          <button type="submit" class="danger small-btn">Delete</button>
         </form>
         {{end}}
       </td>
     </tr>
     {{else}}
-    <tr><td colspan="4" class="muted">No accounts.</td></tr>
+    <tr><td colspan="4" class="muted">No accounts yet.</td></tr>
     {{end}}
     </tbody>
   </table>
+  {{if $d.Service}}<p class="muted small">The file also holds Crew's own API account, which is hidden here.</p>{{end}}
 </section>
 
 {{if $f.Writable}}
 <section class="card">
-  <h2>Add account</h2>
+  <h2>Add an account</h2>
   <form method="post" action="{{.Root}}admin/accounts/{{$f.ID}}/add" class="row">
-    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="base" value="{{$d.Base}}">
     <input name="username" placeholder="username" required>
     <input type="password" name="password" placeholder="password (empty = generate)" autocomplete="new-password">
     <button type="submit">Add</button>
   </form>
-  <p class="muted">Passwords are stored as bcrypt hashes. A generated password is shown once.</p>
+</section>
+{{end}}
+
+{{with $d.Optional}}
+<section class="card">
+  <form method="post" action="{{$.Root}}admin/accounts/{{$f.ID}}/disable" class="row" data-confirm="Turn off {{.}}? The file is kept.">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="key" value="{{.}}">
+    <input type="hidden" name="username" value="x">
+    <span class="muted">Turn off these accounts ({{.}} is removed from the settings).</span>
+    <button type="submit" class="danger">Turn off</button>
+  </form>
 </section>
 {{end}}
 {{end}}

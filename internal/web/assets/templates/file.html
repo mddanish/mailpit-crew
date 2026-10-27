@@ -1,0 +1,114 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="row spread">
+  <h1>{{$d.Label}}</h1>
+  <nav class="modes">
+    <a href="{{.Root}}admin/file/{{$d.Name}}" {{if eq $d.Mode "form"}}class="active"{{end}}>Form</a>
+    <a href="{{.Root}}admin/file/{{$d.Name}}?mode=full" {{if eq $d.Mode "full"}}class="active"{{end}}>Full editor</a>
+  </nav>
+</div>
+<div class="muted intro">
+  {{if eq $d.Name "tags"}}Tag new messages that match a Mailpit search.{{else if eq $d.Name "relay"}}SMTP server Mailpit uses to release messages to real mailboxes (the Release button in Mailpit).{{else}}Forward a copy of every new message through an SMTP server.{{end}}
+  File: <code>{{$d.Path}}</code> ·
+  {{if $d.Enabled}}<span class="ok">on</span> ({{$d.Key}})
+    <form method="post" action="{{.Root}}admin/file/{{$d.Name}}/disable" class="inline" data-confirm="Turn off {{$d.Label}}? {{$d.Key}} is removed from the settings; the file is kept.">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button type="submit" class="link danger-link">turn off</button>
+    </form>
+  {{else}}<span class="warn">off</span> — saving here creates the file and sets {{$d.Key}}.{{end}}
+</div>
+
+{{if $d.ParseErr}}<div class="flash error">The file cannot be read as YAML: {{$d.ParseErr}}. Fix it in the full editor.</div>{{end}}
+{{with $d.Problems}}<div class="flash error">Problems in the saved file:<ul>{{range .}}<li>{{.String}}</li>{{end}}</ul></div>{{end}}
+
+{{if eq $d.Mode "full"}}
+{{template "editor" .}}
+{{else if eq $d.Name "tags"}}
+<section class="card">
+  <h2>In the file</h2>
+  <table class="kv">
+    <thead><tr><th>#</th><th>Match</th><th>Tags</th><th></th></tr></thead>
+    <tbody>
+    {{range $i, $r := $d.Rules}}
+    <tr>
+      <td>{{inc $i}}</td>
+      <td><code>{{$r.Match}}</code> <button type="button" class="link" data-test="{{$.Root}}admin/file/tags/test" data-q="{{$r.Match}}">test</button> <span class="test-result muted small"></span></td>
+      <td>{{$r.Tags}}</td>
+      <td class="row-actions">
+        <form method="post" action="{{$.Root}}admin/file/tags/move" class="inline">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="base" value="{{$d.Base}}">
+          <input type="hidden" name="index" value="{{$i}}"><input type="hidden" name="dir" value="up">
+          <button type="submit" class="secondary small-btn" title="Move up" {{if eq $i 0}}disabled{{end}}>↑</button>
+        </form>
+        <form method="post" action="{{$.Root}}admin/file/tags/move" class="inline">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="base" value="{{$d.Base}}">
+          <input type="hidden" name="index" value="{{$i}}"><input type="hidden" name="dir" value="down">
+          <button type="submit" class="secondary small-btn" title="Move down">↓</button>
+        </form>
+        <form method="post" action="{{$.Root}}admin/file/tags/delete" class="inline" data-confirm="Delete this rule?">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="base" value="{{$d.Base}}">
+          <input type="hidden" name="index" value="{{$i}}">
+          <button type="submit" class="danger small-btn">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {{else}}
+    <tr><td colspan="4" class="muted">No rules.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+<section class="card">
+  <h2>Add a rule</h2>
+  <form method="post" action="{{.Root}}admin/file/tags/set" class="row">
+    <input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="base" value="{{$d.Base}}">
+    <input name="match" placeholder="from:gitea@example.com" required class="grow" data-match>
+    <input name="tags" placeholder="Gitea, Git" required>
+    <button type="button" class="secondary" data-test="{{.Root}}admin/file/tags/test">Test</button>
+    <button type="submit">Add</button>
+    <span class="test-result muted small"></span>
+  </form>
+  <p class="muted small">Match uses Mailpit search: <code>from:</code>, <code>to:</code>, <code>addressed:</code>, <code>subject:</code>, <code>has:attachment</code>, words, or an exact phrase in quotes. Tags are comma separated. Rules tag new mail only.</p>
+</section>
+{{else}}
+<section class="card">
+  <h2>In the file</h2>
+  <table class="kv">
+    <thead><tr><th>Key</th><th>Value</th><th></th></tr></thead>
+    <tbody>
+    {{range $d.Entries}}
+    <tr>
+      <td><code>{{.Key}}</code><div class="muted small">{{if .Known}}{{.Desc}}{{else}}not a key Mailpit reads{{end}}</div></td>
+      <td class="value"><code>{{.Value}}</code></td>
+      <td class="row-actions">
+        {{if .Known}}<a class="button secondary small-btn" href="{{$.Root}}admin/file/{{$d.Name}}?key={{.Key}}#change">Change</a>{{end}}
+        <form method="post" action="{{$.Root}}admin/file/{{$d.Name}}/delete" class="inline" data-confirm="Delete {{.Key}}?">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="base" value="{{$d.Base}}">
+          <input type="hidden" name="key" value="{{.Key}}">
+          <button type="submit" class="danger small-btn">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {{else}}
+    <tr><td colspan="3" class="muted">Empty. Start with <code>host</code>{{if eq $d.Name "forward"}} and <code>to</code>{{end}}.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+<section class="card" id="change">
+  <h2>Add or change a key</h2>
+  <form method="post" action="{{.Root}}admin/file/{{$d.Name}}/set" class="keyform">
+    <input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="base" value="{{$d.Base}}">
+    <div class="row">
+      <select name="key" data-keyselect required>
+        <option value="">Choose a key…</option>
+        {{range $d.Fields}}<option value="{{.Key}}" data-meta="{{json .}}" {{if eq .Key $d.Select}}selected{{end}}>{{.Key}}</option>{{end}}
+      </select>
+      <span data-valuebox><input name="value" placeholder="value" class="value-input"></span>
+      <button type="submit">Save</button>
+    </div>
+    <p class="muted small keyhelp" data-keyhelp>Choose a key to see what it does and an example.</p>
+  </form>
+</section>
+{{end}}
+{{end}}

@@ -12,14 +12,13 @@ import (
 	"github.com/mddanish/mailpit-crew/internal/envfile"
 	"github.com/mddanish/mailpit-crew/internal/fsutil"
 	"github.com/mddanish/mailpit-crew/internal/htpasswd"
-	"github.com/mddanish/mailpit-crew/internal/users"
 )
 
 // Import copies an existing Mailpit setup (its env file and the files it
 // points to) into the managed layout. Mailpit must be stopped first so the
-// database copy is consistent. Web UI accounts become Crew admins with the
-// same password.
-func Import(l Layout, oldEnvPath string, store *users.Store) ([]string, error) {
+// database copy is consistent. Web UI accounts are added to ui.auth next to
+// Crew's service account.
+func Import(l Layout, oldEnvPath string) ([]string, error) {
 	if _, err := os.Stat(l.DB); err == nil {
 		return nil, fmt.Errorf("%s already exists: import only works on a new setup", l.DB)
 	}
@@ -34,16 +33,11 @@ func Import(l Layout, oldEnvPath string, store *users.Store) ([]string, error) {
 	}
 	env := envfile.Parse(cur)
 	var notes []string
-	copied := map[string]string{}
 
 	copyTo := func(src, dest string, mode os.FileMode) error {
-		if prev, ok := copied[src+"|"+dest]; ok && prev == dest {
-			return nil
-		}
 		if err := copyFile(src, dest, mode); err != nil {
 			return fmt.Errorf("copy %s: %w", src, err)
 		}
-		copied[src+"|"+dest] = dest
 		notes = append(notes, "copied "+src+" -> "+dest)
 		return nil
 	}
@@ -52,6 +46,9 @@ func Import(l Layout, oldEnvPath string, store *users.Store) ([]string, error) {
 			return "", err
 		}
 		dest := filepath.Join(l.SSL, filepath.Base(src))
+		if _, err := os.Stat(dest); err == nil {
+			return dest, nil // already copied for another setting
+		}
 		mode := os.FileMode(0o644)
 		if strings.Contains(strings.ToLower(filepath.Base(src)), "key") {
 			mode = 0o600
@@ -74,39 +71,35 @@ func Import(l Layout, oldEnvPath string, store *users.Store) ([]string, error) {
 				}
 			}
 		case "MP_UI_AUTH_FILE":
-			n, err := importUIAccounts(v, store)
+			n, err := mergeAccounts(v, l.UIAuth)
 			if err != nil {
 				return notes, err
 			}
 			notes = append(notes, n...)
-		case "MP_UI_TLS_CERT", "MP_UI_TLS_KEY":
-			dest, err := sslCopy(v)
-			if err != nil {
-				return notes, err
-			}
-			notes = append(notes, fmt.Sprintf("%s is now served by Crew: set tls.cert/tls.key in the Crew config (copied to %s)", k, dest))
-		case "MP_UI_AUTH", "MP_UI_BIND_ADDR", "MP_WEBROOT", "MP_LOG_FILE", "MP_TAGS_USERNAME":
+		case "MP_UI_AUTH", "MP_WEBROOT", "MP_LOG_FILE":
 			notes = append(notes, "skipped "+k+" (managed by Crew)")
 		case "MP_SMTP_AUTH_FILE", "MP_POP3_AUTH_FILE", "MP_SEND_API_AUTH_FILE":
-			dest := l.AuthFile(k)
+			dest := l.StandardFile(k)
+			if filepath.Clean(v) == filepath.Clean(old.Map()["MP_UI_AUTH_FILE"]) {
+				notes = append(notes, k+" used the web UI password file; it now has its own copy in "+dest)
+			}
 			if err := copyTo(v, dest, 0o600); err != nil {
 				return notes, err
 			}
 			_ = env.Set(k, dest)
-		case "MP_TAGS_CONFIG":
-			if err := copyTo(v, l.Tags, 0o644); err != nil {
+		case "MP_TAGS_CONFIG", "MP_SMTP_RELAY_CONFIG", "MP_SMTP_FORWARD_CONFIG":
+			dest := l.StandardFile(k)
+			mode := os.FileMode(0o600)
+			if k == "MP_TAGS_CONFIG" {
+				mode = 0o644
+			}
+			if err := copyTo(v, dest, mode); err != nil {
 				return notes, err
 			}
-			_ = env.Set(k, l.Tags)
+			_ = env.Set(k, dest)
 		default:
 			if key, ok := catalog.Lookup(k); ok && key.Kind == catalog.File {
-				var dest string
-				if key.PairWith != "" {
-					dest, err = sslCopy(v)
-				} else {
-					dest = filepath.Join(l.Dir, filepath.Base(v))
-					err = copyTo(v, dest, 0o640)
-				}
+				dest, err := sslCopy(v)
 				if err != nil {
 					return notes, err
 				}
@@ -118,7 +111,7 @@ func Import(l Layout, oldEnvPath string, store *users.Store) ([]string, error) {
 			}
 		}
 	}
-	if err := fsutil.WriteAtomic(l.EnvFile, env.Bytes(), 0o640); err != nil {
+	if err := fsutil.WriteAtomic(l.EnvFile, env.Bytes(), 0o600); err != nil {
 		return notes, err
 	}
 	for _, e := range catalog.ValidateEnv(env.Map()) {
@@ -127,27 +120,32 @@ func Import(l Layout, oldEnvPath string, store *users.Store) ([]string, error) {
 	return notes, nil
 }
 
-func importUIAccounts(path string, store *users.Store) ([]string, error) {
-	data, err := os.ReadFile(path)
+// mergeAccounts adds the accounts of src to the password file dest.
+func mergeAccounts(src, dest string) ([]string, error) {
+	in, err := os.ReadFile(src)
 	if err != nil {
 		return nil, err
 	}
+	cur, err := os.ReadFile(dest)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	f := htpasswd.Parse(cur)
 	var notes []string
-	for _, e := range htpasswd.Parse(data).Entries() {
+	for _, e := range htpasswd.Parse(in).Entries() {
 		if e.User == ServiceUser {
 			continue
 		}
-		if _, exists := store.Get(e.User); exists {
-			notes = append(notes, "Crew user "+e.User+" already exists, kept it")
+		if _, exists := f.Get(e.User); exists {
+			notes = append(notes, "web UI account "+e.User+" already exists, kept it")
 			continue
 		}
-		if err := store.AddHash(e.User, e.Hash, users.RoleAdmin); err != nil {
-			notes = append(notes, "could not import web UI account "+e.User+": "+err.Error())
-			continue
+		if err := f.Set(e.User, e.Hash); err != nil {
+			return notes, err
 		}
-		notes = append(notes, "web UI account "+e.User+" is now a Crew admin (same password)")
+		notes = append(notes, "web UI account "+e.User+" imported (same password)")
 	}
-	return notes, nil
+	return notes, fsutil.WriteAtomic(dest, f.Bytes(), 0o600)
 }
 
 func copyFile(src, dest string, mode os.FileMode) error {

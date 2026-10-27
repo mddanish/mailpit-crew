@@ -4,6 +4,7 @@ package web
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"html/template"
 	"io/fs"
 	"log/slog"
@@ -16,7 +17,6 @@ import (
 	"github.com/mddanish/mailpit-crew/internal/apply"
 	"github.com/mddanish/mailpit-crew/internal/audit"
 	"github.com/mddanish/mailpit-crew/internal/catalog"
-	"github.com/mddanish/mailpit-crew/internal/inbox"
 	"github.com/mddanish/mailpit-crew/internal/mailpit"
 	"github.com/mddanish/mailpit-crew/internal/managed"
 	"github.com/mddanish/mailpit-crew/internal/users"
@@ -32,14 +32,12 @@ type Options struct {
 	Webroot      string
 	SecureCookie bool
 	SessionTTL   time.Duration
-	ApplyTimeout time.Duration
 	Version      string
-	RestartMode  string
+	CrewPort     string
 	Users        *users.Store
 	Manager      *apply.Manager
 	Mailpit      *mailpit.Client
-	Managed      *managed.Service // nil in external mode
-	Inbox        *inbox.Inbox
+	Managed      *managed.Service
 	Audit        *audit.Log
 	Log          *slog.Logger
 }
@@ -78,10 +76,10 @@ var funcs = template.FuncMap{
 	"bytes":  humanBytes,
 	"istrue": catalog.IsTrue,
 	"u64":    func(n int64) uint64 { return uint64(n) },
-	"addr":   formatAddr,
-	"addrs":  formatAddrs,
-	"when":   formatWhen,
-	"add":    func(a, b int) int { return a + b },
+	"json": func(v any) (template.JS, error) {
+		b, err := json.Marshal(v)
+		return template.JS(b), err
+	},
 }
 
 func (s *Server) parseTemplates() error {
@@ -91,10 +89,10 @@ func (s *Server) parseTemplates() error {
 	}
 	for _, n := range names {
 		base := strings.TrimSuffix(strings.TrimPrefix(n, "assets/templates/"), ".html")
-		if base == "layout" {
+		if base == "layout" || strings.HasPrefix(base, "partial_") {
 			continue
 		}
-		t, err := template.New("layout.html").Funcs(funcs).ParseFS(assets, "assets/templates/layout.html", n)
+		t, err := template.New("layout.html").Funcs(funcs).ParseFS(assets, "assets/templates/layout.html", "assets/templates/partial_*.html", n)
 		if err != nil {
 			return err
 		}
@@ -111,49 +109,42 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /login", s.loginSubmit)
 	s.mux.HandleFunc("POST /logout", s.auth(s.logout))
 	s.mux.HandleFunc("GET /{$}", s.auth(func(w http.ResponseWriter, r *http.Request, c *reqCtx) {
-		if c.user.IsAdmin() {
-			s.redirect(w, r, "admin")
-			return
-		}
-		s.redirect(w, r, "inbox")
+		s.redirect(w, r, "admin")
 	}))
-
-	s.mux.HandleFunc("GET /inbox", s.auth(s.inboxPage))
-	s.mux.HandleFunc("GET /inbox/state", s.auth(s.inboxState))
-	s.mux.HandleFunc("POST /inbox/action", s.auth(s.mailAction))
-	s.mux.HandleFunc("GET /inbox/{id}", s.auth(s.mailPage))
-	s.mux.HandleFunc("GET /inbox/{id}/html", s.auth(s.mailHTML))
-	s.mux.HandleFunc("GET /inbox/{id}/eml", s.auth(s.mailRaw))
-	s.mux.HandleFunc("GET /inbox/{id}/part/{part}", s.auth(s.mailPart))
-
-	s.mux.HandleFunc("GET /admin/users", s.admin(s.usersPage))
-	s.mux.HandleFunc("POST /admin/users", s.admin(s.userAdd))
-	s.mux.HandleFunc("GET /admin/users/{name}", s.admin(s.userPage))
-	s.mux.HandleFunc("POST /admin/users/{name}", s.admin(s.userUpdate))
-	s.mux.HandleFunc("POST /admin/users/{name}/password", s.admin(s.userPassword))
-	s.mux.HandleFunc("POST /admin/users/{name}/delete", s.admin(s.userDelete))
-
 	s.mux.HandleFunc("GET /account/password", s.auth(s.passwordPage))
 	s.mux.HandleFunc("POST /account/password", s.auth(s.passwordSubmit))
 
-	s.mux.HandleFunc("GET /admin", s.admin(s.dashboard))
-	s.mux.HandleFunc("GET /admin/settings", s.admin(s.settingsPage))
-	s.mux.HandleFunc("POST /admin/settings", s.admin(s.settingsSubmit))
-	s.mux.HandleFunc("GET /admin/settings/raw", s.admin(s.rawPage))
-	s.mux.HandleFunc("POST /admin/settings/raw", s.admin(s.rawSubmit))
-	s.mux.HandleFunc("GET /admin/accounts", s.admin(s.accountsPage))
-	s.mux.HandleFunc("GET /admin/accounts/{id}", s.admin(s.accountFilePage))
-	s.mux.HandleFunc("POST /admin/accounts/{id}/{action}", s.admin(s.accountAction))
-	s.mux.HandleFunc("GET /admin/tags", s.admin(s.tagsPage))
-	s.mux.HandleFunc("POST /admin/tags", s.admin(s.tagsSubmit))
-	s.mux.HandleFunc("GET /admin/tags/test", s.admin(s.tagsTest))
-	s.mux.HandleFunc("POST /admin/accounts/enable", s.admin(s.accountsEnable))
-	s.mux.HandleFunc("GET /admin/mailpit", s.admin(s.mailpitPage))
-	s.mux.HandleFunc("POST /admin/mailpit/use", s.admin(s.mailpitUse))
-	s.mux.HandleFunc("POST /admin/mailpit/remove", s.admin(s.mailpitRemove))
-	s.mux.HandleFunc("GET /admin/changes", s.admin(s.changesPage))
-	s.mux.HandleFunc("POST /admin/changes/discard", s.admin(s.discard))
-	s.mux.HandleFunc("POST /admin/apply", s.admin(s.applySubmit))
+	s.mux.HandleFunc("GET /admin", s.auth(s.dashboard))
+	s.mux.HandleFunc("GET /admin/mailpit", s.auth(s.mailpitPage))
+	s.mux.HandleFunc("POST /admin/mailpit/use", s.auth(s.mailpitUse))
+	s.mux.HandleFunc("POST /admin/mailpit/remove", s.auth(s.mailpitRemove))
+
+	s.mux.HandleFunc("GET /admin/pending", s.auth(s.pendingPage))
+	s.mux.HandleFunc("POST /admin/restart", s.auth(s.restartSubmit))
+	s.mux.HandleFunc("POST /admin/rollback", s.auth(s.rollbackSubmit))
+
+	// settings (mailpit.ini)
+	s.mux.HandleFunc("GET /admin/settings", s.auth(s.settingsPage))
+	s.mux.HandleFunc("POST /admin/settings/set", s.auth(s.settingsSet))
+	s.mux.HandleFunc("POST /admin/settings/delete", s.auth(s.settingsDelete))
+
+	// YAML files: tags, relay, forward
+	s.mux.HandleFunc("GET /admin/file/{kind}", s.auth(s.filePage))
+	s.mux.HandleFunc("POST /admin/file/{kind}/set", s.auth(s.fileSet))
+	s.mux.HandleFunc("POST /admin/file/{kind}/delete", s.auth(s.fileDelete))
+	s.mux.HandleFunc("POST /admin/file/{kind}/move", s.auth(s.fileMove))
+	s.mux.HandleFunc("POST /admin/file/{kind}/disable", s.auth(s.fileDisable))
+	s.mux.HandleFunc("GET /admin/file/tags/test", s.auth(s.tagsTest))
+
+	// full editor, all text files
+	s.mux.HandleFunc("POST /admin/edit/{kind}", s.auth(s.editSave))
+	s.mux.HandleFunc("POST /admin/verify/{kind}", s.auth(s.editVerify))
+
+	// password files
+	s.mux.HandleFunc("GET /admin/accounts", s.auth(s.accountsPage))
+	s.mux.HandleFunc("POST /admin/accounts/enable", s.auth(s.accountsEnable))
+	s.mux.HandleFunc("GET /admin/accounts/{id}", s.auth(s.accountFilePage))
+	s.mux.HandleFunc("POST /admin/accounts/{id}/{action}", s.auth(s.accountAction))
 }
 
 // Handler returns the HTTP handler, mounted at the webroot.
@@ -201,6 +192,7 @@ func sameOrigin(r *http.Request) bool {
 	return err == nil && u.Host == r.Host
 }
 
+// auth requires a logged-in Crew admin, and a CSRF token on POST.
 func (s *Server) auth(h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var sess *session
@@ -212,7 +204,7 @@ func (s *Server) auth(h handler) http.HandlerFunc {
 			return
 		}
 		u, ok := s.opts.Users.Get(sess.User)
-		if !ok || !u.IsEnabled() {
+		if !ok {
 			s.sessions.delete(sess.ID)
 			s.redirect(w, r, "login")
 			return
@@ -227,16 +219,6 @@ func (s *Server) auth(h handler) http.HandlerFunc {
 	}
 }
 
-func (s *Server) admin(h handler) http.HandlerFunc {
-	return s.auth(func(w http.ResponseWriter, r *http.Request, c *reqCtx) {
-		if !c.user.IsAdmin() {
-			http.Error(w, "admin role required", http.StatusForbidden)
-			return
-		}
-		h(w, r, c)
-	})
-}
-
 type pageData struct {
 	Title   string
 	Nav     string
@@ -246,8 +228,8 @@ type pageData struct {
 	CSRF    string
 	Flashes []flash
 	Pending int
-	Managed bool
-	Setup   bool // managed mode, no Mailpit version selected
+	Failure *apply.Failure
+	Setup   bool // no Mailpit version selected
 	Data    any
 }
 
@@ -263,13 +245,9 @@ func (s *Server) render(w http.ResponseWriter, c *reqCtx, name, title, nav strin
 		pd.User = &u
 		pd.CSRF = c.sess.CSRF
 		pd.Flashes = s.sessions.takeFlashes(c.sess)
-		if u.IsAdmin() {
-			pd.Pending = s.opts.Manager.PendingCount()
-		}
-		if s.opts.Managed != nil {
-			pd.Managed = true
-			pd.Setup = !s.opts.Managed.HasBinary()
-		}
+		pd.Pending = s.opts.Manager.PendingCount()
+		pd.Failure = s.opts.Manager.Failure()
+		pd.Setup = !s.opts.Managed.HasBinary()
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := t.Execute(w, pd); err != nil {

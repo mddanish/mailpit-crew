@@ -1,39 +1,30 @@
 {{define "content"}}
 <h1>Accounts</h1>
-<p class="muted">Mailpit password files. One file can be used by several services.</p>
-{{if .Data.Enable}}
-<section class="card">
-  <h2>Not enabled</h2>
-  <table>
-    <tbody>
-    {{range .Data.Enable}}
-    <tr>
-      <td><strong>{{.Label}}</strong><br><span class="muted">{{.Note}}</span></td>
-      <td><code>{{.Path}}</code></td>
-      <td class="row-actions">
-        <form method="post" action="{{$.Root}}admin/accounts/enable" class="inline">
-          <input type="hidden" name="csrf" value="{{$.CSRF}}">
-          <input type="hidden" name="key" value="{{.Key}}">
-          <button type="submit">Enable</button>
-        </form>
-      </td>
-    </tr>
-    {{end}}
-    </tbody>
-  </table>
-</section>
-{{end}}
-{{if and (not .Data.Files) (not .Data.Enable)}}
-<section class="card"><p>No password files are configured. Set <code>MP_SMTP_AUTH_FILE</code>, <code>MP_UI_AUTH_FILE</code> or <code>MP_POP3_AUTH_FILE</code> on the Settings page.</p></section>
-{{end}}
+<p class="muted">Mailpit password files. Passwords are stored as bcrypt hashes.</p>
 <div class="grid">
 {{range .Data.Files}}
   <a class="card tile" href="{{$.Root}}admin/accounts/{{.ID}}">
     <h2>{{.Label}}</h2>
-    <p><code>{{.Path}}</code></p>
-    <p class="muted">{{join .Uses ", "}}</p>
-    {{if not .Exists}}<p class="error">file missing</p>{{else if not .Writable}}<p class="warn">read only</p>{{end}}
+    <p>{{.Accounts}} account(s)</p>
+    <p class="muted small">{{.Note}}</p>
+    <p class="muted small"><code>{{.Path}}</code></p>
+    {{if not .Exists}}<p class="error">file missing</p>{{end}}
   </a>
 {{end}}
 </div>
+
+{{range .Data.Enable}}
+<section class="card">
+  <h2>{{.Label}} accounts <span class="badge muted-badge">off</span></h2>
+  <p class="muted">{{.Note}}</p>
+  <form method="post" action="{{$.Root}}admin/accounts/enable" class="row">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="key" value="{{.Key}}">
+    <input name="username" placeholder="first account, e.g. gitea" required>
+    <input type="password" name="password" placeholder="password (empty = generate)" autocomplete="new-password">
+    <button type="submit">Turn on</button>
+  </form>
+  <p class="muted small">Creates <code>{{.Path}}</code> and sets <code>{{.Key}}</code>.</p>
+</section>
+{{end}}
 {{end}}
