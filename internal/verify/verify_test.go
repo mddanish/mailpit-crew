@@ -39,6 +39,16 @@ func TestEnv(t *testing.T) {
 	}
 }
 
+func TestEnvSMTPAuthNeedsTLS(t *testing.T) {
+	iss := Env([]byte("MP_LABEL=x\nMP_SMTP_AUTH=u:p\n"), EnvOptions{})
+	if !has(iss, 2, "SMTP authentication needs", false) {
+		t.Errorf("missing TLS error: %v", iss)
+	}
+	if iss := Env([]byte("MP_SMTP_AUTH=u:p\nMP_SMTP_AUTH_ALLOW_INSECURE=true\n"), EnvOptions{}); len(Errors(iss)) != 0 {
+		t.Errorf("insecure allowed: %v", iss)
+	}
+}
+
 func TestTags(t *testing.T) {
 	if iss := Tags([]byte("filters: []\n")); len(iss) != 0 {
 		t.Fatalf("empty list: %v", iss)

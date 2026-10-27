@@ -290,6 +290,12 @@ func TestAccounts(t *testing.T) {
 	if !strings.HasPrefix(read(t, smtp), "gitea:$2a$") || !strings.Contains(read(t, e.layout.EnvFile), "MP_SMTP_AUTH_FILE=") {
 		t.Fatal("enable")
 	}
+	if !strings.Contains(read(t, e.layout.EnvFile), "MP_SMTP_AUTH_ALLOW_INSECURE=true") || e.mgr.Validate() != nil {
+		t.Fatal("SMTP accounts without TLS would stop Mailpit from starting")
+	}
+	if _, body := e.get(t, "/admin/accounts"); !strings.Contains(body, "travel unencrypted") {
+		t.Fatal("no note about insecure SMTP logins")
+	}
 	uiID := apply.FileID(apply.KindAuth, e.layout.UIAuth)
 	_, page := e.get(t, "/admin/accounts/"+uiID)
 	if strings.Contains(page, "<strong>crew</strong>") || !strings.Contains(page, "hidden here") {

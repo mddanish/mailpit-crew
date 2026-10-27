@@ -3,6 +3,7 @@ package catalog
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -73,6 +74,39 @@ func TestValidateEnvCrossRules(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("cert without key accepted: %v", errs)
+	}
+}
+
+func TestValidateEnvSMTPAuthNeedsTLS(t *testing.T) {
+	has := func(errs []FieldError, key string) bool {
+		for _, e := range errs {
+			if e.Key == key && strings.Contains(e.Err, "SMTP authentication needs") {
+				return true
+			}
+		}
+		return false
+	}
+	for _, k := range []string{"MP_SMTP_AUTH_FILE", "MP_SMTP_AUTH"} {
+		if !has(ValidateEnvWith(map[string]string{k: "x"}, func(string) bool { return true }), k) {
+			t.Errorf("%s without TLS accepted", k)
+		}
+	}
+	if !has(ValidateEnv(map[string]string{"MP_SMTP_AUTH_ACCEPT_ANY": "true"}), "MP_SMTP_AUTH_ACCEPT_ANY") {
+		t.Error("accept-any without TLS accepted")
+	}
+	ok := []map[string]string{
+		{"MP_SMTP_AUTH": "u:p", "MP_SMTP_AUTH_ALLOW_INSECURE": "true"},
+		{"MP_SMTP_AUTH": "u:p", "MP_SMTP_TLS_CERT": "/c", "MP_SMTP_TLS_KEY": "/k"},
+		{"MP_SMTP_AUTH_ACCEPT_ANY": "false"},
+		{"MP_POP3_AUTH_FILE": "x", "MP_SEND_API_AUTH_FILE": "x"},
+	}
+	for _, m := range ok {
+		errs := ValidateEnvWith(m, func(string) bool { return true })
+		for _, k := range []string{"MP_SMTP_AUTH_FILE", "MP_SMTP_AUTH", "MP_SMTP_AUTH_ACCEPT_ANY", "MP_POP3_AUTH_FILE", "MP_SEND_API_AUTH_FILE"} {
+			if has(errs, k) {
+				t.Errorf("%v: unexpected TLS error: %v", m, errs)
+			}
+		}
 	}
 }
 
