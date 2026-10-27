@@ -155,7 +155,7 @@ Priority: flags, env vars, config file, defaults. Unknown config keys are errors
 
 ## 8. Commands
 
-`mailpit-crew` (run), `import <mailpit.ini>` (copy an existing setup: database, password files with UI accounts merged into `ui.auth`, YAML files, certificates, settings), `reset-password`, `hash-password`, `version`.
+`mailpit-crew` (run), `health` (exit 0 when the web UI answers), `import <mailpit.ini>` (copy an existing setup: database, password files with UI accounts merged into `ui.auth`, YAML files, certificates, settings), `reset-password`, `hash-password`, `version`.
 
 ---
 
@@ -179,7 +179,8 @@ Checked against Mailpit v1.28.0 (source and a running binary):
 
 ---
 
-## 10. Later
+## 10. Docker
 
-- Docker image and `docker-compose.yml`.
-- Crew's own HTTPS from the same certificate as Mailpit.
+- `Dockerfile`: Go build stage, Alpine runtime with `ca-certificates`, `tini` and `tzdata`. `ENTRYPOINT tini -g -- mailpit-crew`, so tini reaps Mailpit (started detached by `ctl.sh`) and sends stop signals to the whole process group. `MPC_HOME=/crew` (volume), `MPC_LISTEN=[::]:8080`, ports 8080, 8025, 1025, 1110. Health check `mailpit-crew health`.
+- `docker-compose.yml`: one service, named volume for `/crew`, `MPC_MAILPIT_VERSION=latest` for the first start, `restart: unless-stopped`, `stop_grace_period: 30s`.
+- Mailpit ports in the settings and published ports must match; Crew does not change the compose file.

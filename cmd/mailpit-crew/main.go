@@ -4,6 +4,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -40,6 +41,7 @@ Usage:
   mailpit-crew import [flags] <mailpit.ini>    import an existing Mailpit setup
   mailpit-crew reset-password [flags]          set a new random password for the Crew admin
   mailpit-crew hash-password                   read a password from stdin, print a bcrypt hash
+  mailpit-crew health [flags]                  exit 0 when the Crew web UI answers (for health checks)
   mailpit-crew version                         print the version
 
 Run "mailpit-crew --help" to list all flags.
@@ -58,6 +60,8 @@ func main() {
 			os.Exit(hashPassword())
 		case "import":
 			os.Exit(importSetup(args[1:]))
+		case "health":
+			os.Exit(health(args[1:]))
 		case "help":
 			fmt.Printf(usage, version)
 			return
@@ -114,6 +118,30 @@ func hashPassword() int {
 		return fail(err)
 	}
 	fmt.Println(h)
+	return 0
+}
+
+// health checks that the Crew web UI answers on its own port.
+func health(args []string) int {
+	cfg, err := config.Load(args, os.Stderr)
+	if err != nil {
+		return fail(err)
+	}
+	scheme := "http"
+	if cfg.TLS.Cert != "" {
+		scheme = "https"
+	}
+	url := scheme + "://" + net.JoinHostPort("127.0.0.1", cfg.ListenPort()) + cfg.Webroot + "login"
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // #nosec G402 -- local health check
+	resp, err := (&http.Client{Timeout: 5 * time.Second, Transport: tr}).Get(url)
+	if err != nil {
+		return fail(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fail(fmt.Errorf("%s: %s", url, resp.Status))
+	}
 	return 0
 }
 

@@ -1,0 +1,10 @@
+.git
+.github
+dist
+data
+/mailpit-crew
+*.bundle
+*.log
+config.yaml
+docker-compose.yml
+Dockerfile

@@ -103,6 +103,37 @@ journalctl -u mailpit-crew | grep password   # first admin password
 
 The unit uses `KillMode=process`, so Mailpit keeps running while Crew restarts or upgrades. Stop Mailpit with `/opt/mailpit-crew/mailpit/ctl.sh stop`.
 
+## Run with Docker
+
+One container runs Crew and Mailpit. Everything is kept in the `/crew` volume (Crew login, settings, password files, mail database, downloaded Mailpit binaries).
+
+```sh
+docker compose up -d --build
+docker compose logs mailpit-crew | grep password    # first admin password
+```
+
+Then open `http://your-host:8080` (Crew) and `http://your-host:8025` (Mailpit). [docker-compose.yml](docker-compose.yml) publishes 8080, 8025 and 1025; uncomment 1110 when you turn on POP3. If you change Mailpit's ports in Crew (`MP_UI_BIND_ADDR`, `MP_SMTP_BIND_ADDR`, `MP_POP3_BIND_ADDR`), change the container ports in the compose file to match.
+
+Without Compose:
+
+```sh
+docker build -t mailpit-crew .
+docker run -d --name mailpit-crew -p 8080:8080 -p 8025:8025 -p 1025:1025 \
+  -e MPC_MAILPIT_VERSION=latest -v mailpit-crew:/crew mailpit-crew
+```
+
+- `MPC_MAILPIT_VERSION` is used on the very first start only (`latest`, a tag, or a binary path in the container). Later, change versions on the Mailpit page.
+- The image uses tini as PID 1: it reaps Mailpit and passes the stop signal to Crew and Mailpit, so Mailpit closes its database cleanly (`stop_grace_period: 30s`).
+- Health check: `mailpit-crew health` (the Crew web UI answers).
+- Reset the admin password: `docker compose exec mailpit-crew mailpit-crew reset-password`.
+- Certificates: mount them, for example `./ssl:/crew/mailpit/ssl:ro`, and point the TLS settings at `/crew/mailpit/ssl/...`.
+- Import an existing setup: mount the old folder at its original path and run the import once before the first start:
+
+  ```sh
+  docker compose run --rm -v /opt/mailpit:/opt/mailpit:ro mailpit-crew import /opt/mailpit/mailpit.ini
+  docker compose up -d
+  ```
+
 ## Move an existing Mailpit setup into Crew
 
 Example: Mailpit in `/opt/mailpit` with `/opt/mailpit/mailpit.ini` and its own `mailpit.service`.
@@ -143,6 +174,7 @@ mailpit-crew [flags]                         run Crew, which runs Mailpit
 mailpit-crew import [flags] <mailpit.ini>    import an existing Mailpit setup
 mailpit-crew reset-password [flags]          new random password for the Crew admin
 mailpit-crew hash-password                   bcrypt hash for an htpasswd line
+mailpit-crew health [flags]                  exit 0 when the Crew web UI answers
 mailpit-crew version
 mailpit-crew --help                          all flags (each has an MPC_* env var)
 ```

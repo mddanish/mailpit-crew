@@ -1,0 +1,42 @@
+# MailPit-Crew with Docker Compose.
+#
+#   docker compose up -d --build
+#   docker compose logs mailpit-crew | grep password    # first admin password
+#
+# Then open http://your-host:8080 (Crew) and http://your-host:8025 (Mailpit).
+
+services:
+  mailpit-crew:
+    build:
+      context: .
+      args:
+        VERSION: "0.4.0"
+    image: mailpit-crew:latest
+    container_name: mailpit-crew
+    restart: unless-stopped
+    environment:
+      # Mailpit to install on the very first start: latest, a tag such as
+      # v1.32.0, or a binary path inside the container. Ignored once a
+      # version is installed; change versions on the Mailpit page.
+      MPC_MAILPIT_VERSION: latest
+      TZ: UTC
+      # Crew's own HTTPS (optional), with certificates in ./ssl:
+      # MPC_TLS_CERT: /crew/mailpit/ssl/mail.example.com.fullchain.pem
+      # MPC_TLS_KEY: /crew/mailpit/ssl/mail.example.com.key.pem
+    ports:
+      # Keep these in line with the Mailpit settings: if you change
+      # MP_UI_BIND_ADDR, MP_SMTP_BIND_ADDR or MP_POP3_BIND_ADDR in Crew,
+      # change the container port on the right here too.
+      - "8080:8080"   # Crew admin UI
+      - "8025:8025"   # Mailpit web UI and API (users read mail here)
+      - "1025:1025"   # Mailpit SMTP
+      # - "1110:1110" # Mailpit POP3, when turned on in Crew
+    volumes:
+      - mailpit-crew:/crew
+      # Certificates for Mailpit (MP_UI_TLS_*, MP_SMTP_TLS_*) and Crew:
+      # - ./ssl:/crew/mailpit/ssl:ro
+    # Mailpit gets time to close its database when the container stops.
+    stop_grace_period: 30s
+
+volumes:
+  mailpit-crew:
