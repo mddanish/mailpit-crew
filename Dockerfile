@@ -4,13 +4,16 @@
 #   docker run -d -p 8080:8080 -p 8025:8025 -p 1025:1025 -v mailpit-crew:/crew mailpit-crew
 
 # --- build ---
-FROM golang:1.24-alpine AS build
+# Runs on the build machine's platform and cross-compiles for the target,
+# so multi-arch builds (amd64, arm64) need no emulation for Go.
+FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
+ARG TARGETOS TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
     -o /out/mailpit-crew ./cmd/mailpit-crew
 
 # --- run ---

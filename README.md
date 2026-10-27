@@ -22,6 +22,44 @@ Install, configure and run [Mailpit](https://github.com/axllent/mailpit) from on
 - **Secrets stay hidden**: password hashes, relay and forward passwords and secret settings are masked in forms, diffs and the editor.
 - **Import** an existing Mailpit setup. **Audit log** of every login and change.
 
+## Screenshots
+
+**Status**: Mailpit state, checks and the files Crew manages.
+
+![Status](docs/images/dashboard.png)
+
+**Mailpit versions**: latest, latest-1, latest-2 or any other tag or binary.
+
+![Mailpit versions](docs/images/mailpit.png)
+
+**Settings**, form and full editor. The form lists what is in `mailpit.ini`, with Change and Delete on each key; the form below adds keys.
+
+![Settings form](docs/images/settings.png)
+
+![Settings full editor](docs/images/settings-editor.png)
+
+**Tag rules**: rules in order, with Test, move and Delete.
+
+![Tag rules](docs/images/tags.png)
+
+**SMTP relay**, form and full editor. Each key shows its description and an example; secrets stay masked.
+
+![SMTP relay form](docs/images/relay.png)
+
+![SMTP relay full editor](docs/images/relay-editor.png)
+
+**SMTP accounts**: add, reset or delete logins.
+
+![SMTP accounts](docs/images/accounts-smtp.png)
+
+**Changes not active**: saved files Mailpit does not use yet, as a diff, with Restart.
+
+![Changes not active](docs/images/pending.png)
+
+**Failed restart**: Mailpit's error and log lines, then restart again after a fix, or roll back.
+
+![Failed restart](docs/images/restart-failed.png)
+
 ## Folder layout
 
 ```
@@ -114,13 +152,14 @@ docker compose logs mailpit-crew | grep password    # first admin password
 
 Then open `http://your-host:8080` (Crew) and `http://your-host:8025` (Mailpit). [docker-compose.yml](docker-compose.yml) publishes 8080, 8025 and 1025; uncomment 1110 when you turn on POP3. If you change Mailpit's ports in Crew (`MP_UI_BIND_ADDR`, `MP_SMTP_BIND_ADDR`, `MP_POP3_BIND_ADDR`), change the container ports in the compose file to match.
 
-Without Compose:
+Without Compose, with the prebuilt image (linux/amd64 and linux/arm64, published to GitHub Container Registry on every release):
 
 ```sh
-docker build -t mailpit-crew .
 docker run -d --name mailpit-crew -p 8080:8080 -p 8025:8025 -p 1025:1025 \
-  -e MPC_MAILPIT_VERSION=latest -v mailpit-crew:/crew mailpit-crew
+  -e MPC_MAILPIT_VERSION=latest -v mailpit-crew:/crew ghcr.io/mddanish/mailpit-crew:latest
 ```
+
+Image tags: `latest`, the release version (`0.4.0`) and minor line (`0.4`). To build the image yourself: `docker build -t mailpit-crew .`
 
 - `MPC_MAILPIT_VERSION` is used on the very first start only (`latest`, a tag, or a binary path in the container). Later, change versions on the Mailpit page.
 - The image uses tini as PID 1: it reaps Mailpit and passes the stop signal to Crew and Mailpit, so Mailpit closes its database cleanly (`stop_grace_period: 30s`).
