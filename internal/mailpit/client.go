@@ -62,9 +62,9 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		if resp.StatusCode == http.StatusUnauthorized {
-			return fmt.Errorf("mailpit API: unauthorized (check the Crew service account)")
+			return statusError{resp.StatusCode, "mailpit API: unauthorized (check the Crew service account)"}
 		}
-		return fmt.Errorf("mailpit API: %s", resp.Status)
+		return statusError{resp.StatusCode, "mailpit API: " + resp.Status}
 	}
 	if out == nil {
 		return nil

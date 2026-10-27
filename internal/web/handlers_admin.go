@@ -15,6 +15,7 @@ import (
 	"github.com/mddanish/mailpit-crew/internal/envfile"
 	"github.com/mddanish/mailpit-crew/internal/htpasswd"
 	"github.com/mddanish/mailpit-crew/internal/mailpit"
+	"github.com/mddanish/mailpit-crew/internal/managed"
 )
 
 type check struct {
@@ -42,6 +43,11 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 	} else {
 		d.Info = info
 	}
+	if d.Info != nil {
+		if w := usernameWarning(d.Info.Version); w != "" {
+			d.Checks = append(d.Checks, check{"warn", "SMTP account rules need a newer Mailpit", w})
+		}
+	}
 	env, err := s.opts.Manager.DiskEnv()
 	switch {
 	case errors.Is(err, apply.ErrNoEnvFile):
@@ -52,6 +58,19 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 		d.Checks = s.checks(env)
 	}
 	s.render(w, c, "dashboard", "Status", "status", d)
+}
+
+// minUsernameVersion is the first Mailpit that stores the SMTP username for
+// AUTH PLAIN logins (v1.28.0-v1.28.2 only did it for AUTH LOGIN).
+const minUsernameVersion = "v1.28.3"
+
+// usernameWarning explains when SMTP account rules may not match.
+func usernameWarning(version string) string {
+	if !managed.ValidTag(version) || managed.CompareTags(version, minUsernameVersion) >= 0 {
+		return ""
+	}
+	return "Mailpit " + version + " records the SMTP account only for AUTH LOGIN, not AUTH PLAIN (most apps). " +
+		"Inbox rules of type \"SMTP account\" will miss those messages. Upgrade to " + minUsernameVersion + " or newer, or use From/To rules."
 }
 
 func isLoopback(addr string) bool {

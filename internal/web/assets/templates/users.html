@@ -1,0 +1,33 @@
+{{define "content"}}
+<h1>Users</h1>
+<p class="muted">People who log in to Crew. Admins see all mail and manage Mailpit. Users see only mail that matches their rules.</p>
+<section class="card">
+  <table>
+    <thead><tr><th>User</th><th>Role</th><th>Rules</th><th>State</th></tr></thead>
+    <tbody>
+    {{range .Data.Users}}
+    <tr>
+      <td><a href="{{$.Root}}admin/users/{{.Username}}"><strong>{{.Username}}</strong></a></td>
+      <td>{{.Role}}</td>
+      <td>{{if .IsAdmin}}<span class="muted">all mail</span>{{else}}{{len .Rules}}{{end}}</td>
+      <td>{{if .IsEnabled}}<span class="ok">enabled</span>{{else}}<span class="muted">disabled</span>{{end}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Add user</h2>
+  <form method="post" action="{{.Root}}admin/users" class="row">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input name="username" placeholder="username" required>
+    <select name="role">
+      <option value="user">user</option>
+      <option value="admin">admin</option>
+    </select>
+    <input type="password" name="password" placeholder="password (empty = generate)" autocomplete="new-password">
+    <button type="submit">Add</button>
+  </form>
+</section>
+{{end}}

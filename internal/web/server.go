@@ -16,6 +16,7 @@ import (
 	"github.com/mddanish/mailpit-crew/internal/apply"
 	"github.com/mddanish/mailpit-crew/internal/audit"
 	"github.com/mddanish/mailpit-crew/internal/catalog"
+	"github.com/mddanish/mailpit-crew/internal/inbox"
 	"github.com/mddanish/mailpit-crew/internal/mailpit"
 	"github.com/mddanish/mailpit-crew/internal/managed"
 	"github.com/mddanish/mailpit-crew/internal/users"
@@ -38,6 +39,7 @@ type Options struct {
 	Manager      *apply.Manager
 	Mailpit      *mailpit.Client
 	Managed      *managed.Service // nil in external mode
+	Inbox        *inbox.Inbox
 	Audit        *audit.Log
 	Log          *slog.Logger
 }
@@ -76,6 +78,10 @@ var funcs = template.FuncMap{
 	"bytes":  humanBytes,
 	"istrue": catalog.IsTrue,
 	"u64":    func(n int64) uint64 { return uint64(n) },
+	"addr":   formatAddr,
+	"addrs":  formatAddrs,
+	"when":   formatWhen,
+	"add":    func(a, b int) int { return a + b },
 }
 
 func (s *Server) parseTemplates() error {
@@ -105,8 +111,27 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /login", s.loginSubmit)
 	s.mux.HandleFunc("POST /logout", s.auth(s.logout))
 	s.mux.HandleFunc("GET /{$}", s.auth(func(w http.ResponseWriter, r *http.Request, c *reqCtx) {
-		s.redirect(w, r, "admin")
+		if c.user.IsAdmin() {
+			s.redirect(w, r, "admin")
+			return
+		}
+		s.redirect(w, r, "inbox")
 	}))
+
+	s.mux.HandleFunc("GET /inbox", s.auth(s.inboxPage))
+	s.mux.HandleFunc("GET /inbox/state", s.auth(s.inboxState))
+	s.mux.HandleFunc("POST /inbox/action", s.auth(s.mailAction))
+	s.mux.HandleFunc("GET /inbox/{id}", s.auth(s.mailPage))
+	s.mux.HandleFunc("GET /inbox/{id}/html", s.auth(s.mailHTML))
+	s.mux.HandleFunc("GET /inbox/{id}/eml", s.auth(s.mailRaw))
+	s.mux.HandleFunc("GET /inbox/{id}/part/{part}", s.auth(s.mailPart))
+
+	s.mux.HandleFunc("GET /admin/users", s.admin(s.usersPage))
+	s.mux.HandleFunc("POST /admin/users", s.admin(s.userAdd))
+	s.mux.HandleFunc("GET /admin/users/{name}", s.admin(s.userPage))
+	s.mux.HandleFunc("POST /admin/users/{name}", s.admin(s.userUpdate))
+	s.mux.HandleFunc("POST /admin/users/{name}/password", s.admin(s.userPassword))
+	s.mux.HandleFunc("POST /admin/users/{name}/delete", s.admin(s.userDelete))
 
 	s.mux.HandleFunc("GET /account/password", s.auth(s.passwordPage))
 	s.mux.HandleFunc("POST /account/password", s.auth(s.passwordSubmit))

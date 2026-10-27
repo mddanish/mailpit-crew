@@ -17,6 +17,7 @@ import (
 
 	"github.com/mddanish/mailpit-crew/internal/apply"
 	"github.com/mddanish/mailpit-crew/internal/htpasswd"
+	"github.com/mddanish/mailpit-crew/internal/inbox"
 	"github.com/mddanish/mailpit-crew/internal/mailpit"
 	"github.com/mddanish/mailpit-crew/internal/users"
 )
@@ -37,18 +38,13 @@ type env struct {
 	store  *users.Store
 }
 
-func newEnv(t *testing.T) *env {
-	t.Helper()
-	dir := t.TempDir()
-	h, _ := htpasswd.HashPassword("crew-password")
-	os.WriteFile(filepath.Join(dir, "users.auth"), []byte("crew:"+h+"\n"), 0o600)
-	os.WriteFile(filepath.Join(dir, "smtp.auth"), []byte("gitea:"+h+"\n"), 0o600)
-	os.WriteFile(filepath.Join(dir, "mailpit.ini"), []byte(
-		"MP_DATABASE="+filepath.Join(dir, "mailpit.db")+"\n"+
-			"MP_UI_AUTH_FILE="+filepath.Join(dir, "users.auth")+"\n"+
-			"MP_SMTP_AUTH_FILE="+filepath.Join(dir, "smtp.auth")+"\n"), 0o644)
+func newJar() http.CookieJar {
+	jar, _ := cookiejar.New(nil)
+	return jar
+}
 
-	fakeMailpit := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func newEnv(t *testing.T) *env {
+	return newEnvWith(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/readyz":
 		case "/api/v1/info":
@@ -59,6 +55,20 @@ func newEnv(t *testing.T) *env {
 			http.NotFound(w, r)
 		}
 	}))
+}
+
+func newEnvWith(t *testing.T, mailpitAPI http.Handler) *env {
+	t.Helper()
+	dir := t.TempDir()
+	h, _ := htpasswd.HashPassword("crew-password")
+	os.WriteFile(filepath.Join(dir, "users.auth"), []byte("crew:"+h+"\n"), 0o600)
+	os.WriteFile(filepath.Join(dir, "smtp.auth"), []byte("gitea:"+h+"\n"), 0o600)
+	os.WriteFile(filepath.Join(dir, "mailpit.ini"), []byte(
+		"MP_DATABASE="+filepath.Join(dir, "mailpit.db")+"\n"+
+			"MP_UI_AUTH_FILE="+filepath.Join(dir, "users.auth")+"\n"+
+			"MP_SMTP_AUTH_FILE="+filepath.Join(dir, "smtp.auth")+"\n"), 0o644)
+
+	fakeMailpit := httptest.NewServer(mailpitAPI)
 	t.Cleanup(fakeMailpit.Close)
 	mp := mailpit.New(fakeMailpit.URL, "crew", "crew-password")
 
@@ -82,6 +92,7 @@ func newEnv(t *testing.T) *env {
 	s, err := New(Options{
 		Webroot: "/", SessionTTL: time.Hour, ApplyTimeout: 5 * time.Second, Version: "test",
 		RestartMode: "command", Users: store, Manager: mgr, Mailpit: mp, Log: log,
+		Inbox: &inbox.Inbox{Client: mp},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -161,10 +172,16 @@ func TestLoginAndDashboard(t *testing.T) {
 	}
 }
 
-func TestNonAdminCannotLogIn(t *testing.T) {
+func TestNonAdminCannotOpenAdmin(t *testing.T) {
 	e := newEnv(t)
-	if r := e.login(t, "dev", "dev-password"); r.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("non-admin login: %d", r.StatusCode)
+	if r := e.login(t, "dev", "dev-password"); r.StatusCode != http.StatusSeeOther {
+		t.Fatalf("user login: %d", r.StatusCode)
+	}
+	if code, _ := e.get(t, "/admin/settings"); code != http.StatusForbidden {
+		t.Fatalf("user opened admin page: %d", code)
+	}
+	if code, _ := e.get(t, "/admin/users"); code != http.StatusForbidden {
+		t.Fatalf("user opened users page: %d", code)
 	}
 }
 

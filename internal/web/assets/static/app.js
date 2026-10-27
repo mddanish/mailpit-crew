@@ -10,6 +10,37 @@
     }
   });
 
+  // confirm for single submit buttons inside a shared form
+  document.addEventListener("click", function (e) {
+    var btn = e.target.closest("button[data-confirm-click]");
+    if (btn && !window.confirm(btn.getAttribute("data-confirm-click"))) {
+      e.preventDefault();
+    }
+  });
+
+  // inbox: select all
+  document.addEventListener("change", function (e) {
+    if (!e.target.matches("input[data-select-all]")) return;
+    var boxes = e.target.closest("form").querySelectorAll('input[name="id"]');
+    for (var i = 0; i < boxes.length; i++) boxes[i].checked = e.target.checked;
+  });
+
+  // inbox: show a banner when new mail arrives
+  var banner = document.getElementById("new-mail");
+  if (banner) {
+    var url = banner.getAttribute("data-state");
+    var latest = banner.getAttribute("data-latest");
+    setInterval(function () {
+      if (document.hidden) return;
+      fetch(url, { credentials: "same-origin" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (d && d.latest && d.latest !== latest) banner.hidden = false;
+        })
+        .catch(function () {});
+    }, 15000);
+  }
+
   // tag rule "Test" buttons
   document.addEventListener("click", function (e) {
     var btn = e.target.closest("button[data-test]");

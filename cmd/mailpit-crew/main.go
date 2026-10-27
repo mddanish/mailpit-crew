@@ -21,6 +21,7 @@ import (
 	"github.com/mddanish/mailpit-crew/internal/audit"
 	"github.com/mddanish/mailpit-crew/internal/config"
 	"github.com/mddanish/mailpit-crew/internal/htpasswd"
+	"github.com/mddanish/mailpit-crew/internal/inbox"
 	"github.com/mddanish/mailpit-crew/internal/mailpit"
 	"github.com/mddanish/mailpit-crew/internal/managed"
 	"github.com/mddanish/mailpit-crew/internal/restart"
@@ -358,6 +359,7 @@ func run(cfg *config.Config, log *slog.Logger, store *users.Store, mgr *apply.Ma
 		Manager:      mgr,
 		Mailpit:      client,
 		Managed:      svc,
+		Inbox:        &inbox.Inbox{Client: client},
 		Audit:        audit.New(filepath.Join(cfg.DataDir, "audit.log")),
 		Log:          log,
 	})

@@ -30,6 +30,7 @@ type mailpitData struct {
 	LastError  string
 	LogTail    []string
 	Asset      string
+	Warning    string
 }
 
 func (s *Server) mailpitPage(w http.ResponseWriter, r *http.Request, c *reqCtx) {
@@ -47,6 +48,7 @@ func (s *Server) mailpitPage(w http.ResponseWriter, r *http.Request, c *reqCtx) 
 		LogTail:   s.opts.Manager.LogTail(),
 		Asset:     managed.AssetName(),
 	}
+	d.Warning = usernameWarning(d.Active)
 	ctx, cancel := s.ctx(r, 5*time.Second)
 	defer cancel()
 	if d.Running {

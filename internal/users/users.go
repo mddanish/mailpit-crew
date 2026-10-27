@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 
 	"github.com/mddanish/mailpit-crew/internal/fsutil"
@@ -173,6 +174,82 @@ func (s *Store) Add(username, password, role string) error {
 	}
 	s.users = append(s.users, User{Username: username, Password: h, Role: role})
 	return s.saveLocked()
+}
+
+// List returns copies of all users, sorted by name.
+func (s *Store) List() []User {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := append([]User(nil), s.users...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Username < out[j].Username })
+	return out
+}
+
+// ErrLastAdmin is returned when a change would leave no enabled admin.
+var ErrLastAdmin = errors.New("at least one enabled admin must remain")
+
+func (s *Store) enabledAdminsLocked(except string) int {
+	n := 0
+	for _, u := range s.users {
+		if u.Username != except && u.IsAdmin() && u.IsEnabled() {
+			n++
+		}
+	}
+	return n
+}
+
+// Update changes a user with fn and saves the file. The username and
+// password hash cannot be changed with Update.
+func (s *Store) Update(username string, fn func(u *User) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.users {
+		if s.users[i].Username != username {
+			continue
+		}
+		u := s.users[i]
+		u.Rules = append([]Rule(nil), u.Rules...)
+		if err := fn(&u); err != nil {
+			return err
+		}
+		if u.Role != RoleAdmin && u.Role != RoleUser {
+			return errors.New("role must be admin or user")
+		}
+		u.Username, u.Password = s.users[i].Username, s.users[i].Password
+		if (!u.IsAdmin() || !u.IsEnabled()) && s.enabledAdminsLocked(username) == 0 {
+			return ErrLastAdmin
+		}
+		old := s.users[i]
+		s.users[i] = u
+		if err := s.saveLocked(); err != nil {
+			s.users[i] = old
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("user %q not found", username)
+}
+
+// Delete removes a user and saves the file.
+func (s *Store) Delete(username string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, u := range s.users {
+		if u.Username != username {
+			continue
+		}
+		if s.enabledAdminsLocked(username) == 0 {
+			return ErrLastAdmin
+		}
+		old := s.users
+		s.users = append(append([]User(nil), s.users[:i]...), s.users[i+1:]...)
+		if err := s.saveLocked(); err != nil {
+			s.users = old
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("user %q not found", username)
 }
 
 // AddHash adds a user with an existing bcrypt hash (for imports).

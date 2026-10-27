@@ -4,7 +4,7 @@ Run and manage [Mailpit](https://github.com/axllent/mailpit) from one program. M
 
 > MailPit-Crew is an unofficial companion tool. It is not part of, or endorsed by, the Mailpit project. Mailpit itself is not modified.
 
-Status: **phase 1** (admin panel and managed Mailpit). Per-user inboxes come in phase 2, a per-user POP3 server and Docker images in phase 3. See [SPEC.md](SPEC.md).
+Status: **phase 2** (admin panel, managed Mailpit, per-user inboxes). A per-user POP3 server and Docker images come in phase 3. See [SPEC.md](SPEC.md).
 
 ## Features
 
@@ -16,7 +16,31 @@ Status: **phase 1** (admin panel and managed Mailpit). Per-user inboxes come in 
 - **Tag rules**: edit `tags.yaml` as a table, reorder, test a rule against stored mail.
 - **Safe apply**: changes are staged, shown as a diff, then applied with validation, backup, atomic write, restart, health check and rollback.
 - **Import**: bring an existing Mailpit setup (settings, database, password files, tag rules, certificates) into Crew. Web UI accounts become Crew logins with the same password.
-- **Audit log** of every login and change.
+- **Per-user inboxes**: Crew users log in and see only the mail their rules allow. Admins see everything.
+- **Users**: add Crew users, set role (admin or user), mail rules, reset passwords, preview what a user sees.
+- **Audit log** of every login, change and message delete.
+
+## Inbox and users
+
+Mailpit has one shared mailbox. Crew gives each person a filtered view of it.
+
+- **Admins** see all mail and manage Mailpit.
+- **Users** see a message when at least one of their rules matches:
+
+| Rule | Matches | Example |
+|---|---|---|
+| SMTP account | the SMTP login the app used to send | `gitea` |
+| From address | sender address (`*` and `?` allowed) | `*@forge.example.com` |
+| To / Cc / Bcc address | any recipient | `qa+*@example.com` |
+| Tag | a Mailpit tag | `Vaultwarden` |
+
+Matching ignores case. A user without rules sees nothing.
+
+The inbox has search (Mailpit search syntax), tag filter, read/unread, delete, a "new mail" notice, and a message view with HTML, text, headers, raw source, attachments and `.eml` download.
+
+- **SMTP account rules need Mailpit v1.28.3 or newer.** Older versions only store the SMTP login for `AUTH LOGIN`, not `AUTH PLAIN`, which most apps use. Crew shows a warning on the Status and Mailpit pages.
+- Every message, part and action is checked against the user's rules. Messages a user may not see return "not found".
+- HTML mail is shown in a sandboxed frame: no scripts, no forms, and remote images and styles are blocked until you click "Load remote content". Attachments always download, they never open in Crew.
 
 ## Folder layout
 

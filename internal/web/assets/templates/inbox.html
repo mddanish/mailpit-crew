@@ -1,0 +1,61 @@
+{{define "content"}}
+{{$d := .Data}}{{$res := $d.Result}}
+<div class="row spread">
+  <h1>Inbox <span class="muted count">{{$res.Total}} message(s){{if $res.Unread}}, {{$res.Unread}} unread{{end}}</span></h1>
+  <form method="get" action="{{.Root}}inbox" class="row searchform">
+    <input name="q" value="{{$d.Query}}" placeholder="Search (Mailpit search syntax)" class="search">
+    {{if $res.Tags}}
+    <select name="tag">
+      <option value="">All tags</option>
+      {{range $res.Tags}}<option value="{{.}}" {{if eq . $d.Tag}}selected{{end}}>{{.}}</option>{{end}}
+    </select>
+    {{end}}
+    <button type="submit" class="secondary">Search</button>
+    {{if or $d.Query $d.Tag}}<a href="{{.Root}}inbox">Clear</a>{{end}}
+  </form>
+</div>
+
+<div id="new-mail" class="flash info" hidden data-state="{{.Root}}inbox/state" data-latest="{{$res.Latest}}">New mail arrived. <a href="{{$d.PageURL .Root 1}}">Reload</a></div>
+{{with $d.Error}}<div class="flash error">Mailpit is not reachable: {{.}}</div>{{end}}
+{{if $d.NoRule}}<div class="flash info">No mail rules are set for your account yet. Ask an admin to add rules.</div>{{end}}
+{{if $res.Truncated}}<div class="flash info">Only the newest messages were searched. Use search to narrow down.</div>{{end}}
+
+<form method="post" action="{{.Root}}inbox/action" id="bulk">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <input type="hidden" name="back" value="{{$d.PageURL "" $res.Page}}">
+  <section class="card flush">
+    <div class="toolbar row">
+      <label class="check"><input type="checkbox" data-select-all> all</label>
+      <button type="submit" name="action" value="read" class="secondary">Mark read</button>
+      <button type="submit" name="action" value="unread" class="secondary">Mark unread</button>
+      <button type="submit" name="action" value="delete" class="danger" data-confirm-click="Delete the selected messages?">Delete</button>
+    </div>
+    <table class="mails">
+      <tbody>
+      {{range $res.Messages}}
+      <tr class="{{if not .Read}}unread{{end}}">
+        <td class="sel"><input type="checkbox" name="id" value="{{.ID}}"></td>
+        <td class="sender"><a href="{{$.Root}}inbox/{{.ID}}">{{if .From}}{{if .From.Name}}{{.From.Name}}{{else}}{{.From.Address}}{{end}}{{end}}</a>
+          <div class="muted small">to {{addrs .To}}</div></td>
+        <td class="subj"><a href="{{$.Root}}inbox/{{.ID}}">{{if .Subject}}{{.Subject}}{{else}}(no subject){{end}}</a>
+          <div class="muted small">{{.Snippet}}</div>
+          {{range .Tags}}<span class="tag">{{.}}</span>{{end}}
+        </td>
+        <td class="meta">{{when .Created}}{{if .Attachments}}<div class="muted small">{{.Attachments}} attachment(s)</div>{{end}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="4" class="muted empty">No messages.</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+  </section>
+</form>
+
+{{if gt $res.Pages 1}}
+<nav class="pager row">
+  {{if gt $res.Page 1}}<a href="{{$d.PageURL .Root (add $res.Page -1)}}">&larr; Newer</a>{{end}}
+  <span class="muted">Page {{$res.Page}} of {{$res.Pages}}</span>
+  {{if lt $res.Page $res.Pages}}<a href="{{$d.PageURL .Root (add $res.Page 1)}}">Older &rarr;</a>{{end}}
+</nav>
+{{end}}
+{{end}}

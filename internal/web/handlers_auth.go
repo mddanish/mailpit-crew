@@ -57,11 +57,6 @@ func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		fail("Wrong username or password.")
 		return
 	}
-	if !u.IsAdmin() {
-		s.audit(r, username, "login", "", "denied", "not an admin")
-		fail("Only admins can log in to this version of MailPit-Crew.")
-		return
-	}
 	s.limiter.reset(keys...)
 	sess := s.sessions.create(u.Username)
 	s.setSessionCookie(w, sess.ID, int(s.opts.SessionTTL.Seconds()))

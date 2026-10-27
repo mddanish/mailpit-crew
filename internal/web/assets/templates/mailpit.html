@@ -1,6 +1,7 @@
 {{define "content"}}
 {{$d := .Data}}
 <h1>Mailpit</h1>
+{{with $d.Warning}}<div class="flash error">{{.}}</div>{{end}}
 
 <div class="grid">
   <section class="card">

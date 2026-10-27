@@ -1,6 +1,6 @@
 # MailPit-Crew — Specification
 
-Status: Draft v0.3 (phase 1 + managed mode built)
+Status: Draft v0.4 (phase 1, managed mode and phase 2 built)
 Date: 2026-10-27
 License (planned): MIT
 
@@ -261,7 +261,7 @@ users:
 
 | Type | Matches when |
 |---|---|
-| `smtp_user` | Message has a tag equal to the SMTP username (from `MP_TAGS_USERNAME`). Case-insensitive. |
+| `smtp_user` | The message's `Username` (the SMTP login, stored by Mailpit) equals the value. If Mailpit stored no username, a tag with that name also matches (`MP_TAGS_USERNAME`). Case-insensitive. Needs Mailpit v1.28.3+ for `AUTH PLAIN`. |
 | `from` | Sender address matches the glob. |
 | `to` | Any To, Cc or Bcc address matches the glob. |
 | `tag` | Message has the tag. Case-insensitive. |
@@ -532,6 +532,10 @@ Checked against Mailpit v1.28.0 (source and a running binary):
 6. **Env keys**: the UI listen key is `MP_UI_BIND_ADDR` and SMTP is `MP_SMTP_BIND_ADDR` (not `MP_LISTEN`). Bool values are true for `1`, `true` or `yes`. The catalog is in `internal/catalog`.
 7. **Empty tags file**: Mailpit accepts `filters: []`, but fails on a file without a `filters` key (`missing tag: array`).
 8. **Ready then crash**: Mailpit answers `readyz` before the SMTP listener binds. A taken SMTP port makes it exit about 300 ms later. The apply flow handles this (section 7, step 6).
+9. **SMTP username**: message summaries have a `Username` field. Mailpit v1.28.0-v1.28.2 set it only for `AUTH LOGIN`; v1.28.3 fixed `AUTH PLAIN` ("Auto-tagging using SMTP username using plain auth", #617). Crew warns for older versions.
+10. **Dangerous API defaults**: `DELETE /api/v1/messages` with no IDs (or an unreadable body) deletes **all** messages, and `PUT /api/v1/messages` with no IDs marks all messages read. The ID `latest` means the newest message. Crew validates IDs, never sends an empty list, and rejects `latest`.
+11. **Read state**: `GET /api/v1/message/{id}` does not mark a message read. Crew marks it read with `PUT` after the ownership check.
+12. **Upgrade**: switching a live install from v1.28.0 to v1.32.0 through the Mailpit page kept the database and mail.
 
 ## 17. Open questions
 

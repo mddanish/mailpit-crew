@@ -1,0 +1,73 @@
+{{define "content"}}
+{{$d := .Data}}{{$m := $d.M}}
+<p class="muted"><a href="{{.Root}}inbox">&larr; Inbox</a></p>
+<section class="card">
+  <div class="row spread">
+    <h1>{{if $m.Subject}}{{$m.Subject}}{{else}}(no subject){{end}}</h1>
+    <div class="row">
+      <a class="button secondary" href="{{.Root}}inbox/{{$m.ID}}/eml">Download .eml</a>
+      <form method="post" action="{{.Root}}inbox/action" class="inline">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <input type="hidden" name="id" value="{{$m.ID}}">
+        <input type="hidden" name="back" value="inbox">
+        <button type="submit" name="action" value="unread" class="secondary">Mark unread</button>
+      </form>
+      <form method="post" action="{{.Root}}inbox/action" class="inline" data-confirm="Delete this message?">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <input type="hidden" name="id" value="{{$m.ID}}">
+        <input type="hidden" name="back" value="inbox">
+        <button type="submit" name="action" value="delete" class="danger">Delete</button>
+      </form>
+    </div>
+  </div>
+  <dl>
+    <dt>From</dt><dd>{{addr $m.From}}</dd>
+    <dt>To</dt><dd>{{addrs $m.To}}</dd>
+    {{if $m.Cc}}<dt>Cc</dt><dd>{{addrs $m.Cc}}</dd>{{end}}
+    {{if $m.Bcc}}<dt>Bcc</dt><dd>{{addrs $m.Bcc}}</dd>{{end}}
+    {{if $m.ReplyTo}}<dt>Reply-To</dt><dd>{{addrs $m.ReplyTo}}</dd>{{end}}
+    <dt>Date</dt><dd>{{$m.Date.Local.Format "2006-01-02 15:04:05 MST"}}</dd>
+    {{if $m.Username}}<dt>SMTP account</dt><dd>{{$m.Username}}</dd>{{end}}
+    {{if $m.Tags}}<dt>Tags</dt><dd>{{range $m.Tags}}<span class="tag">{{.}}</span>{{end}}</dd>{{end}}
+    <dt>Size</dt><dd>{{bytes $m.Size}}</dd>
+  </dl>
+</section>
+
+<nav class="tabs">
+  {{if $m.HTML}}<a href="?tab=html" {{if eq $d.Tab "html"}}class="active"{{end}}>HTML</a>{{end}}
+  <a href="?tab=text" {{if eq $d.Tab "text"}}class="active"{{end}}>Text</a>
+  <a href="?tab=headers" {{if eq $d.Tab "headers"}}class="active"{{end}}>Headers</a>
+  <a href="?tab=raw" {{if eq $d.Tab "raw"}}class="active"{{end}}>Raw</a>
+  <a href="?tab=attachments" {{if eq $d.Tab "attachments"}}class="active"{{end}}>Attachments ({{len $m.Attachments}})</a>
+</nav>
+
+<section class="card">
+{{if eq $d.Tab "html"}}
+  <p class="muted small">
+    {{if $d.Remote}}Remote content is loaded. <a href="?tab=html">Block remote content</a>
+    {{else}}Remote images and styles are blocked. <a href="?tab=html&amp;remote=1">Load remote content</a>{{end}}
+  </p>
+  <iframe class="mailframe" sandbox src="{{.Root}}inbox/{{$m.ID}}/html{{if $d.Remote}}?remote=1{{end}}" title="Message HTML"></iframe>
+{{else if eq $d.Tab "text"}}
+  {{if $m.Text}}<pre class="mailtext">{{$m.Text}}</pre>{{else}}<p class="muted">This message has no text part.</p>{{end}}
+{{else if eq $d.Tab "headers"}}
+  <table>
+    {{range $d.Headers}}<tr><th>{{.Name}}</th><td>{{range .Values}}<div class="wrap">{{.}}</div>{{end}}</td></tr>{{end}}
+  </table>
+{{else if eq $d.Tab "raw"}}
+  {{if $d.RawCut}}<p class="muted">Showing the first 512 KB. <a href="{{.Root}}inbox/{{$m.ID}}/eml">Download .eml</a> for the full message.</p>{{end}}
+  <pre class="mailtext">{{$d.Raw}}</pre>
+{{else}}
+  {{if $m.Attachments}}
+  <table>
+    <thead><tr><th>File</th><th>Type</th><th>Size</th></tr></thead>
+    <tbody>
+    {{range $m.Attachments}}
+    <tr><td><a href="{{$.Root}}inbox/{{$m.ID}}/part/{{.PartID}}">{{if .FileName}}{{.FileName}}{{else}}part {{.PartID}}{{end}}</a></td><td>{{.ContentType}}</td><td>{{bytes .Size}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}<p class="muted">No attachments.</p>{{end}}
+{{end}}
+</section>
+{{end}}
