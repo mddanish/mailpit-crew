@@ -1,17 +1,16 @@
 # MailPit-Crew with Docker Compose.
 #
-#   docker compose up -d --build
+#   docker compose up -d
 #   docker compose logs mailpit-crew | grep password    # first admin password
 #
 # Then open http://your-host:8080 (Crew) and http://your-host:8025 (Mailpit).
 
 services:
   mailpit-crew:
-    build:
-      context: .
-      args:
-        VERSION: "0.4.0"
-    image: mailpit-crew:latest
+    # Prebuilt image (linux/amd64, linux/arm64). Pin a release with a tag
+    # such as :0.4.2, or build from this folder: replace image with
+    # build: .
+    image: ghcr.io/mddanish/mailpit-crew:latest
     container_name: mailpit-crew
     restart: unless-stopped
     environment:

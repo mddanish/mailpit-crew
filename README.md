@@ -146,11 +146,11 @@ The unit uses `KillMode=process`, so Mailpit keeps running while Crew restarts o
 One container runs Crew and Mailpit. Everything is kept in the `/crew` volume (Crew login, settings, password files, mail database, downloaded Mailpit binaries).
 
 ```sh
-docker compose up -d --build
+docker compose up -d
 docker compose logs mailpit-crew | grep password    # first admin password
 ```
 
-Then open `http://your-host:8080` (Crew) and `http://your-host:8025` (Mailpit). [docker-compose.yml](docker-compose.yml) publishes 8080, 8025 and 1025; uncomment 1110 when you turn on POP3. If you change Mailpit's ports in Crew (`MP_UI_BIND_ADDR`, `MP_SMTP_BIND_ADDR`, `MP_POP3_BIND_ADDR`), change the container ports in the compose file to match.
+Then open `http://your-host:8080` (Crew) and `http://your-host:8025` (Mailpit). [docker-compose.yml](docker-compose.yml) uses the prebuilt `ghcr.io/mddanish/mailpit-crew:latest` image (pin a release with a tag such as `:0.4.2`, or replace `image:` with `build: .` to build from source). It publishes 8080, 8025 and 1025; uncomment 1110 when you turn on POP3. If you change Mailpit's ports in Crew (`MP_UI_BIND_ADDR`, `MP_SMTP_BIND_ADDR`, `MP_POP3_BIND_ADDR`), change the container ports in the compose file to match.
 
 Without Compose, with the prebuilt image (linux/amd64 and linux/arm64, published to GitHub Container Registry on every release):
 

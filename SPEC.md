@@ -182,5 +182,5 @@ Checked against Mailpit v1.28.0 (source and a running binary):
 ## 10. Docker
 
 - `Dockerfile`: Go build stage, Alpine runtime with `ca-certificates`, `tini` and `tzdata`. `ENTRYPOINT tini -g -- mailpit-crew`, so tini reaps Mailpit (started detached by `ctl.sh`) and sends stop signals to the whole process group. `MPC_HOME=/crew` (volume), `MPC_LISTEN=[::]:8080`, ports 8080, 8025, 1025, 1110. Health check `mailpit-crew health`.
-- `docker-compose.yml`: one service, named volume for `/crew`, `MPC_MAILPIT_VERSION=latest` for the first start, `restart: unless-stopped`, `stop_grace_period: 30s`.
+- `docker-compose.yml`: one service using `ghcr.io/mddanish/mailpit-crew:latest`, named volume for `/crew`, `MPC_MAILPIT_VERSION=latest` for the first start, `restart: unless-stopped`, `stop_grace_period: 30s`.
 - Mailpit ports in the settings and published ports must match; Crew does not change the compose file.
