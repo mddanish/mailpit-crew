@@ -1,5 +1,12 @@
 # MailPit-Crew
 
+[![Release](https://img.shields.io/github/v/release/mddanish/mailpit-crew?sort=semver)](https://github.com/mddanish/mailpit-crew/releases/latest)
+[![Release workflow](https://github.com/mddanish/mailpit-crew/actions/workflows/release.yml/badge.svg)](https://github.com/mddanish/mailpit-crew/actions/workflows/release.yml)
+[![CI](https://github.com/mddanish/mailpit-crew/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mddanish/mailpit-crew/actions/workflows/ci.yml)
+[![Docker image](https://img.shields.io/badge/ghcr.io-mddanish%2Fmailpit--crew-blue?logo=docker)](https://github.com/mddanish/mailpit-crew/pkgs/container/mailpit-crew)
+[![Downloads](https://img.shields.io/github/downloads/mddanish/mailpit-crew/total)](https://github.com/mddanish/mailpit-crew/releases)
+[![License](https://img.shields.io/github/license/mddanish/mailpit-crew)](LICENSE)
+
 Install, configure and run [Mailpit](https://github.com/axllent/mailpit) from one program. MailPit-Crew downloads the Mailpit version you choose, runs it through a small control script, and lets you edit every Mailpit setting, password file and YAML file in a web UI, with validation and examples. Mail itself is read in Mailpit's own web UI, as before.
 
 > MailPit-Crew is an unofficial companion tool. It is not part of, or endorsed by, the Mailpit project. Mailpit itself is not modified.
