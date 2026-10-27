@@ -1,0 +1,44 @@
+# MailPit-Crew example configuration.
+# Every setting can also be given as a flag (--listen) or an env var (MPC_LISTEN).
+# Priority: flags > env vars > this file > defaults.
+
+# Crew web UI
+listen: "[::]:8025"
+# webroot: /
+tls:
+  cert: /opt/mailpit/ssl/mail.example.com.fullchain.pem
+  key: /opt/mailpit/ssl/mail.example.com.key.pem
+
+# Crew state: users.yaml, backups/, audit.log
+data_dir: /opt/mailpit-crew/data
+# log_file: /opt/mailpit-crew/crew.log
+# log_level: info
+
+mailpit:
+  # Mailpit API, bound to localhost only (MP_UI_BIND_ADDR=127.0.0.1:8026)
+  api_url: http://127.0.0.1:8026
+  # service account that Crew uses; must be in Mailpit's MP_UI_AUTH_FILE
+  api_user: crew
+  api_password: "change-me"
+  # Mailpit env file (systemd EnvironmentFile)
+  env_file: /opt/mailpit/mailpit.ini
+  # Crew only writes files inside these directories (default: env file directory)
+  # managed_dirs: [/opt/mailpit]
+
+restart:
+  # command: run a command to restart Mailpit (systemd, docker, script)
+  # child:   Crew starts and supervises Mailpit itself
+  mode: command
+  command: ["systemctl", "restart", "mailpit"]
+  timeout: 30s
+
+# child mode only
+# child:
+#   binary: /opt/mailpit/mailpit
+#   args: []
+
+backups:
+  keep: 20
+
+session:
+  ttl: 12h

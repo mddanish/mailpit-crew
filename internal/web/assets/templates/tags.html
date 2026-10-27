@@ -1,0 +1,33 @@
+{{define "content"}}
+<h1>Tag rules</h1>
+<p class="muted">File: <code>{{.Data.File.Path}}</code>{{if .Data.Staged}} · <span class="warn">has staged changes</span>{{end}}</p>
+{{if not .Data.File.Writable}}<div class="flash error">This file is outside the managed directories. Crew cannot change it.</div>{{end}}
+{{if .Data.NotFound}}<div class="flash info">The file does not exist yet. Saving rules creates it on apply.</div>{{end}}
+{{if .Data.Errors}}<div class="flash error">Nothing was staged:<ul>{{range .Data.Errors}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
+<p class="muted">Each rule tags new messages that match a Mailpit search (for example <code>from:git@example.com</code>, <code>addressed:qa@example.com</code>, <code>subject:"reset"</code>). Tags are comma separated. Rules apply to new mail only.</p>
+
+<form method="post" action="{{.Root}}admin/tags">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <input type="hidden" name="rows" value="{{len .Data.Rows}}">
+  <section class="card">
+    <table class="tags">
+      <thead><tr><th>#</th><th>Match</th><th>Tags</th><th>Test</th><th>Delete</th></tr></thead>
+      <tbody>
+      {{range .Data.Rows}}
+      <tr>
+        <td><input class="pos" name="pos_{{.Index}}" value="{{inc .Index}}" inputmode="decimal" title="Order"></td>
+        <td><input name="match_{{.Index}}" value="{{.Match}}" placeholder="search query" data-match></td>
+        <td><input name="tags_{{.Index}}" value="{{.Tags}}" placeholder="Tag 1, Tag 2"></td>
+        <td><button type="button" class="secondary" data-test="{{$.Root}}admin/tags/test">Test</button> <span class="test-result muted"></span></td>
+        <td><input type="checkbox" name="del_{{.Index}}" title="Delete rule"></td>
+      </tr>
+      {{end}}
+      </tbody>
+    </table>
+    <p class="muted">Change the # number to reorder. Empty rows are ignored. Save to get more empty rows.</p>
+  </section>
+  <div class="actions sticky">
+    <button type="submit" {{if not .Data.File.Writable}}disabled{{end}}>Stage changes</button>
+  </div>
+</form>
+{{end}}

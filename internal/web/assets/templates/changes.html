@@ -1,0 +1,41 @@
+{{define "content"}}
+<h1>Changes</h1>
+{{if not .Data.Changes}}
+<section class="card"><p>No staged changes.</p>
+{{with .Data.Last}}<p class="muted">Last apply: {{.Time.Format "2006-01-02 15:04:05"}} by {{.User}}: {{if .OK}}ok{{else}}failed{{if .RolledBack}} (rolled back){{end}}{{end}}. Backup <code>{{.BackupID}}</code>.</p>{{end}}
+</section>
+{{else}}
+<p class="muted">Apply writes these files (after a backup), restarts Mailpit and checks it is ready. If Mailpit does not come back, Crew restores the old files and restarts it again.</p>
+
+{{if .Data.Problems}}
+<div class="flash error">Fix these problems before you apply:<ul>{{range .Data.Problems}}<li>{{.}}</li>{{end}}</ul></div>
+{{end}}
+
+{{range .Data.Changes}}
+<section class="card">
+  <div class="row spread">
+    <h2>{{.File.Label}} <code class="muted">{{.File.Path}}</code></h2>
+    <form method="post" action="{{$.Root}}admin/changes/discard" class="inline">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <input type="hidden" name="path" value="{{.File.Path}}">
+      <button type="submit" class="secondary">Discard</button>
+    </form>
+  </div>
+  {{if .Conflict}}<div class="flash error">This file changed on disk after you staged it. Discard and edit again.</div>{{end}}
+  <pre class="diff">{{range .Diff}}<span class="d{{if eq .Op "+"}}a{{else if eq .Op "-"}}r{{else if eq .Op "…"}}s{{end}}">{{if eq .Op "…"}}  …{{else}}{{.Op}} {{.Text}}{{end}}</span>
+{{end}}</pre>
+</section>
+{{end}}
+
+<div class="actions">
+  <form method="post" action="{{.Root}}admin/apply" class="inline" data-confirm="Write the files and restart Mailpit now?">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button type="submit" {{if .Data.Problems}}disabled{{end}}>Apply and restart Mailpit</button>
+  </form>
+  <form method="post" action="{{.Root}}admin/changes/discard" class="inline" data-confirm="Discard all staged changes?">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button type="submit" class="secondary">Discard all</button>
+  </form>
+</div>
+{{end}}
+{{end}}

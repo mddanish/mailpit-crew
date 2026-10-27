@@ -1,0 +1,17 @@
+{{define "content"}}
+<h1>Accounts</h1>
+<p class="muted">Mailpit password files. One file can be used by several services.</p>
+{{if not .Data.Files}}
+<section class="card"><p>No password files are configured. Set <code>MP_SMTP_AUTH_FILE</code>, <code>MP_UI_AUTH_FILE</code> or <code>MP_POP3_AUTH_FILE</code> on the Settings page.</p></section>
+{{end}}
+<div class="grid">
+{{range .Data.Files}}
+  <a class="card tile" href="{{$.Root}}admin/accounts/{{.ID}}">
+    <h2>{{.Label}}</h2>
+    <p><code>{{.Path}}</code></p>
+    <p class="muted">{{join .Uses ", "}}</p>
+    {{if not .Exists}}<p class="error">file missing</p>{{else if not .Writable}}<p class="warn">read only</p>{{end}}
+  </a>
+{{end}}
+</div>
+{{end}}

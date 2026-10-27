@@ -1,0 +1,52 @@
+{{define "content"}}
+<h1>Settings</h1>
+<p class="muted">File: <code>{{.Data.Path}}</code>{{if .Data.Staged}} · <span class="warn">has staged changes</span>{{end}} · <a href="{{.Root}}admin/settings/raw">Edit as text</a></p>
+{{if not .Data.Writable}}<div class="flash error">This file is outside the managed directories. Crew cannot change it.</div>{{end}}
+{{range .Data.Errors}}<div class="flash error">{{.}}</div>{{end}}
+<p class="muted">Empty fields are removed from the file and Mailpit uses its default. Changes are staged; nothing is written until you apply them.</p>
+
+<form method="post" action="{{.Root}}admin/settings">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  {{range .Data.Sections}}
+  <details class="card" {{if .HasSet}}open{{end}}>
+    <summary><h2>{{.Name}}</h2></summary>
+    {{range .Fields}}
+    <div class="field {{if .Error}}has-error{{end}}">
+      <div class="label">
+        <code>{{.Key.Name}}</code>
+        <span class="muted">{{.Key.Desc}}{{if .Key.Default}} (default {{.Key.Default}}){{end}}</span>
+      </div>
+      <div class="input">
+        {{if eq .Key.Kind "bool"}}
+          <label class="check"><input type="checkbox" name="{{.Key.Name}}" {{if istrue .Value}}checked{{end}}> enabled</label>
+        {{else if .Key.Sensitive}}
+          <input type="password" name="{{.Key.Name}}" autocomplete="new-password" placeholder="{{if .Set}}set (leave empty to keep){{else}}not set{{end}}">
+          {{if .Set}}<label class="check"><input type="checkbox" name="clear_{{.Key.Name}}"> remove</label>{{end}}
+        {{else if eq .Key.Kind "enum"}}
+          <select name="{{.Key.Name}}">
+            <option value="">(not set)</option>
+            {{$v := .Value}}{{range .Key.Options}}<option value="{{.}}" {{if eq . $v}}selected{{end}}>{{.}}</option>{{end}}
+          </select>
+        {{else}}
+          <input name="{{.Key.Name}}" value="{{.Value}}" {{if eq .Key.Kind "int"}}inputmode="numeric"{{end}}>
+        {{end}}
+        {{with .Error}}<div class="error">{{.}}</div>{{end}}
+      </div>
+    </div>
+    {{end}}
+  </details>
+  {{end}}
+
+  {{if .Data.Other}}
+  <section class="card">
+    <h2>Other</h2>
+    <p class="muted">Keys Crew does not know. They are kept as they are. Use "Edit as text" to change them.</p>
+    {{range .Data.Other}}<div><code>{{.Key.Name}}={{.Value}}</code></div>{{end}}
+  </section>
+  {{end}}
+
+  <div class="actions sticky">
+    <button type="submit" {{if not .Data.Writable}}disabled{{end}}>Stage changes</button>
+  </div>
+</form>
+{{end}}

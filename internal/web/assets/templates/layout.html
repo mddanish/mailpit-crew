@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · MailPit-Crew</title>
+<link rel="stylesheet" href="{{.Root}}static/style.css">
+<link rel="icon" href="{{.Root}}static/icon.svg" type="image/svg+xml">
+<script src="{{.Root}}static/app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="{{.Root}}">MailPit-Crew</a>
+  {{if .User}}
+  <nav>
+    {{if .User.IsAdmin}}
+    <a href="{{.Root}}admin" {{if eq .Nav "status"}}class="active"{{end}}>Status</a>
+    <a href="{{.Root}}admin/settings" {{if eq .Nav "settings"}}class="active"{{end}}>Settings</a>
+    <a href="{{.Root}}admin/accounts" {{if eq .Nav "accounts"}}class="active"{{end}}>Accounts</a>
+    <a href="{{.Root}}admin/tags" {{if eq .Nav "tags"}}class="active"{{end}}>Tag rules</a>
+    <a href="{{.Root}}admin/changes" {{if eq .Nav "changes"}}class="active"{{end}}>Changes{{if .Pending}} <span class="badge">{{.Pending}}</span>{{end}}</a>
+    {{end}}
+  </nav>
+  <div class="who">
+    <a href="{{.Root}}account/password" {{if eq .Nav "password"}}class="active"{{end}}>{{.User.Username}}</a>
+    <form method="post" action="{{.Root}}logout" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button class="link" type="submit">Log out</button>
+    </form>
+  </div>
+  {{end}}
+</header>
+<main>
+  {{if and .Pending (ne .Nav "changes")}}
+  <div class="flash info">{{.Pending}} file(s) have staged changes. <a href="{{.Root}}admin/changes">Review and apply</a>.</div>
+  {{end}}
+  {{range .Flashes}}
+  <div class="flash {{.Kind}}">
+    {{.Text}}
+    {{if .Secret}}<code class="secret">{{.Secret}}</code>{{end}}
+    {{if .List}}<pre class="log">{{range .List}}{{.}}
+{{end}}</pre>{{end}}
+  </div>
+  {{end}}
+  {{template "content" .}}
+</main>
+<footer>MailPit-Crew {{.Version}} · unofficial companion for Mailpit</footer>
+</body>
+</html>

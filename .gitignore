@@ -1,0 +1,5 @@
+/mailpit-crew
+/dist/
+/data/
+*.log
+config.yaml

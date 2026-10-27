@@ -1,0 +1,17 @@
+[Unit]
+Description=MailPit-Crew admin panel for Mailpit
+After=network.target mailpit.service
+Wants=mailpit.service
+
+[Service]
+ExecStart=/opt/mailpit-crew/mailpit-crew --config /opt/mailpit-crew/config.yaml
+WorkingDirectory=/opt/mailpit-crew
+Restart=always
+RestartSec=5
+SyslogIdentifier=mailpit-crew
+# root is needed to run "systemctl restart mailpit" and to write Mailpit's files
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
