@@ -132,6 +132,9 @@ func (c *Child) startLocked() error {
 	if c.cmd != nil {
 		return errors.New("mailpit is already running")
 	}
+	if c.Binary == "" {
+		return errors.New("no Mailpit binary selected")
+	}
 	env, err := c.environ()
 	if err != nil {
 		return fmt.Errorf("mailpit env file: %w", err)
@@ -199,6 +202,27 @@ func (c *Child) supervise(uptime time.Duration) {
 			delay *= 2
 		}
 	}
+}
+
+// SetBinary changes the Mailpit binary used on the next start.
+func (c *Child) SetBinary(path string) {
+	c.mu.Lock()
+	c.Binary = path
+	c.mu.Unlock()
+}
+
+// CurrentBinary returns the binary used for starts.
+func (c *Child) CurrentBinary() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Binary
+}
+
+// Running reports whether Mailpit is running.
+func (c *Child) Running() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cmd != nil
 }
 
 // Stop implements Restarter.

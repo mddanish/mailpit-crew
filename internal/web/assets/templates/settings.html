@@ -17,7 +17,9 @@
         <span class="muted">{{.Key.Desc}}{{if .Key.Default}} (default {{.Key.Default}}){{end}}</span>
       </div>
       <div class="input">
-        {{if eq .Key.Kind "bool"}}
+        {{if .Locked}}
+          <code>{{if .Value}}{{.Value}}{{else}}(not set){{end}}</code> <span class="badge muted-badge">managed by Crew</span>
+        {{else if eq .Key.Kind "bool"}}
           <label class="check"><input type="checkbox" name="{{.Key.Name}}" {{if istrue .Value}}checked{{end}}> enabled</label>
         {{else if .Key.Sensitive}}
           <input type="password" name="{{.Key.Name}}" autocomplete="new-password" placeholder="{{if .Set}}set (leave empty to keep){{else}}not set{{end}}">

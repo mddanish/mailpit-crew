@@ -12,14 +12,19 @@
       <dt>SMTP accepted</dt><dd>{{.RuntimeStats.SMTPAccepted}} · rejected {{.RuntimeStats.SMTPRejected}}</dd>
     </dl>
     {{else}}
+    {{if .Setup}}
+    <div class="flash info">No Mailpit version selected. <a href="{{.Root}}admin/mailpit">Choose one</a>.</div>
+    {{else}}
     <div class="flash error">Mailpit API not reachable: {{.Data.InfoError}}</div>
     {{end}}
+    {{end}}
+    {{if .Managed}}<p><a href="{{.Root}}admin/mailpit">Manage Mailpit version</a></p>{{end}}
   </section>
   <section class="card">
     <h2>Crew</h2>
     <dl>
       <dt>Version</dt><dd>{{.Version}}</dd>
-      <dt>Restart mode</dt><dd>{{.Data.RestartMode}}</dd>
+      <dt>Mode</dt><dd>{{if .Managed}}managed (Crew runs Mailpit with ctl.sh){{else}}external ({{.Data.RestartMode}}){{end}}</dd>
       <dt>Pending changes</dt><dd>{{.Pending}}</dd>
       {{with .Data.Last}}
       <dt>Last apply</dt><dd>{{.Time.Format "2006-01-02 15:04:05"}} by {{.User}}: {{if .OK}}<span class="ok">ok</span>{{else}}<span class="error">failed</span>{{if .RolledBack}} (rolled back){{end}}{{end}}</dd>

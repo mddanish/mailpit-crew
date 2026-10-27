@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -50,6 +51,10 @@ func (s *StringList) UnmarshalYAML(n *yaml.Node) error {
 
 // Config holds all settings.
 type Config struct {
+	// Mode is "managed" (Crew owns and runs Mailpit) or "external"
+	// (Crew manages a Mailpit that is installed and run separately).
+	Mode    string `yaml:"mode"`
+	Home    string `yaml:"home"`
 	Listen  string `yaml:"listen"`
 	Webroot string `yaml:"webroot"`
 	TLS     struct {
@@ -74,6 +79,13 @@ type Config struct {
 		LogFile         string     `yaml:"log_file"`
 		ManagedDirs     StringList `yaml:"managed_dirs"`
 	} `yaml:"mailpit"`
+
+	Managed struct {
+		Version     string `yaml:"version"`
+		APIListen   string `yaml:"api_listen"`
+		ReleasesURL string `yaml:"releases_url"`
+		DownloadURL string `yaml:"download_url"`
+	} `yaml:"managed"`
 
 	Restart struct {
 		Mode    string     `yaml:"mode"`
@@ -101,9 +113,13 @@ type Config struct {
 // Defaults returns the built-in defaults.
 func Defaults() *Config {
 	c := &Config{}
+	c.Mode = "managed"
+	c.Home = "."
 	c.Listen = "[::]:8025"
 	c.Webroot = "/"
-	c.DataDir = "./data"
+	c.Managed.APIListen = "127.0.0.1:8026"
+	c.Managed.ReleasesURL = "https://api.github.com/repos/axllent/mailpit/releases"
+	c.Managed.DownloadURL = "https://github.com/axllent/mailpit/releases/download"
 	c.LogLevel = "info"
 	c.Mailpit.APIURL = "http://127.0.0.1:8026"
 	c.Restart.Mode = "command"
@@ -143,11 +159,15 @@ func dur(p func(c *Config) *Duration) func(*Config, string) error {
 }
 
 var settings = []setting{
+	{"mode", "MPC_MODE", "managed (Crew runs Mailpit) or external", str(func(c *Config) *string { return &c.Mode })},
+	{"home", "MPC_HOME", "Crew home directory (managed mode: holds data/ and mailpit/)", str(func(c *Config) *string { return &c.Home })},
+	{"mailpit-version", "MPC_MAILPIT_VERSION", "Managed mode: Mailpit to use on first start: latest, a tag (v1.28.0) or a binary path", str(func(c *Config) *string { return &c.Managed.Version })},
+	{"mailpit-api-listen", "MPC_MAILPIT_API_LISTEN", "Managed mode: local address for the Mailpit API", str(func(c *Config) *string { return &c.Managed.APIListen })},
 	{"listen", "MPC_LISTEN", "Web UI bind address", str(func(c *Config) *string { return &c.Listen })},
 	{"webroot", "MPC_WEBROOT", "Web UI URL prefix", str(func(c *Config) *string { return &c.Webroot })},
 	{"tls-cert", "MPC_TLS_CERT", "TLS certificate for the web UI", str(func(c *Config) *string { return &c.TLS.Cert })},
 	{"tls-key", "MPC_TLS_KEY", "TLS key for the web UI", str(func(c *Config) *string { return &c.TLS.Key })},
-	{"data-dir", "MPC_DATA_DIR", "Directory for users file, backups and audit log", str(func(c *Config) *string { return &c.DataDir })},
+	{"data-dir", "MPC_DATA_DIR", "Directory for users file, backups and audit log (default <home>/data)", str(func(c *Config) *string { return &c.DataDir })},
 	{"users-file", "MPC_USERS_FILE", "Crew users file (default <data-dir>/users.yaml)", str(func(c *Config) *string { return &c.UsersFile })},
 	{"log-file", "MPC_LOG_FILE", "Log to file instead of stdout", str(func(c *Config) *string { return &c.LogFile })},
 	{"log-level", "MPC_LOG_LEVEL", "Log level: error, warn, info, debug", str(func(c *Config) *string { return &c.LogLevel })},
@@ -242,6 +262,26 @@ func Load(args []string, output io.Writer) (*Config, error) {
 }
 
 func (c *Config) finish() error {
+	home, err := filepath.Abs(c.Home)
+	if err != nil {
+		return err
+	}
+	c.Home = home
+	if c.DataDir == "" {
+		c.DataDir = filepath.Join(c.Home, "data")
+	}
+	if c.Mode == "managed" {
+		if c.Mailpit.EnvFile != "" || len(c.Mailpit.ManagedDirs) > 0 {
+			return errors.New("mailpit.env_file and mailpit.managed_dirs are only used with mode external")
+		}
+		if !isLoopbackAddr(c.Managed.APIListen) {
+			return errors.New("managed.api_listen must be a local address, for example 127.0.0.1:8026")
+		}
+		c.Mailpit.EnvFile = filepath.Join(c.MailpitDir(), "mailpit.ini")
+		c.Mailpit.ManagedDirs = StringList{c.MailpitDir()}
+		c.Mailpit.APIURL = "http://" + c.Managed.APIListen
+		c.Restart.Mode = "child"
+	}
 	if c.UsersFile == "" {
 		c.UsersFile = filepath.Join(c.DataDir, "users.yaml")
 	}
@@ -265,8 +305,29 @@ func (c *Config) finish() error {
 	return c.Validate()
 }
 
+// MailpitDir is the managed Mailpit directory (<home>/mailpit).
+func (c *Config) MailpitDir() string { return filepath.Join(c.Home, "mailpit") }
+
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // Validate checks settings that would stop Crew from working.
 func (c *Config) Validate() error {
+	if c.Mode != "managed" && c.Mode != "external" {
+		return fmt.Errorf("mode must be managed or external, not %q", c.Mode)
+	}
+	if c.Mode == "external" && c.Mailpit.EnvFile == "" && c.Restart.Mode == "command" {
+		return errors.New("mode external needs mailpit.env_file")
+	}
 	switch c.Restart.Mode {
 	case "child":
 		if c.Child.Binary == "" {

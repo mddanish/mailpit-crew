@@ -106,10 +106,11 @@ func (s *Server) checks(env *envfile.File) []check {
 // settings
 
 type settingField struct {
-	Key   catalog.Key
-	Value string
-	Set   bool
-	Error string
+	Key    catalog.Key
+	Value  string
+	Set    bool
+	Error  string
+	Locked bool // managed by Crew, read-only
 }
 
 type settingSection struct {
@@ -155,7 +156,14 @@ func (s *Server) buildSettings(f apply.File, env *envfile.File, values map[strin
 			if k.Sensitive {
 				v = ""
 			}
-			ss.Fields = append(ss.Fields, settingField{Key: k, Value: v, Set: set, Error: errs[k.Name]})
+			_, locked := s.opts.Manager.Locked()[k.Name]
+			if locked && k.Sensitive {
+				continue
+			}
+			if locked {
+				v = cur[k.Name]
+			}
+			ss.Fields = append(ss.Fields, settingField{Key: k, Value: v, Set: set, Error: errs[k.Name], Locked: locked})
 			if set {
 				ss.HasSet = true
 			}
@@ -192,7 +200,11 @@ func (s *Server) settingsSubmit(w http.ResponseWriter, r *http.Request, c *reqCt
 	values := map[string]string{}
 	fieldErrs := map[string]string{}
 	var changed []string
+	locked := s.opts.Manager.Locked()
 	for _, k := range catalog.Keys {
+		if _, ok := locked[k.Name]; ok {
+			continue // managed by Crew, not editable here
+		}
 		old, has := cur[k.Name]
 		switch {
 		case k.Kind == catalog.Bool:
@@ -351,8 +363,8 @@ func (s *Server) rawSubmit(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 // accounts
 
 type accountsData struct {
-	Files []apply.File
-	Keys  map[string]catalog.Key
+	Files  []apply.File
+	Enable []enableOption
 }
 
 func (s *Server) accountsPage(w http.ResponseWriter, r *http.Request, c *reqCtx) {
@@ -362,7 +374,7 @@ func (s *Server) accountsPage(w http.ResponseWriter, r *http.Request, c *reqCtx)
 			files = append(files, f)
 		}
 	}
-	s.render(w, c, "accounts", "Accounts", "accounts", accountsData{Files: files})
+	s.render(w, c, "accounts", "Accounts", "accounts", accountsData{Files: files, Enable: s.enableOptions()})
 }
 
 type accountRow struct {

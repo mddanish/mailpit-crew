@@ -1,7 +1,29 @@
 {{define "content"}}
 <h1>Accounts</h1>
 <p class="muted">Mailpit password files. One file can be used by several services.</p>
-{{if not .Data.Files}}
+{{if .Data.Enable}}
+<section class="card">
+  <h2>Not enabled</h2>
+  <table>
+    <tbody>
+    {{range .Data.Enable}}
+    <tr>
+      <td><strong>{{.Label}}</strong><br><span class="muted">{{.Note}}</span></td>
+      <td><code>{{.Path}}</code></td>
+      <td class="row-actions">
+        <form method="post" action="{{$.Root}}admin/accounts/enable" class="inline">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
+          <input type="hidden" name="key" value="{{.Key}}">
+          <button type="submit">Enable</button>
+        </form>
+      </td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}
+{{if and (not .Data.Files) (not .Data.Enable)}}
 <section class="card"><p>No password files are configured. Set <code>MP_SMTP_AUTH_FILE</code>, <code>MP_UI_AUTH_FILE</code> or <code>MP_POP3_AUTH_FILE</code> on the Settings page.</p></section>
 {{end}}
 <div class="grid">

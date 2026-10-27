@@ -15,6 +15,7 @@
   <nav>
     {{if .User.IsAdmin}}
     <a href="{{.Root}}admin" {{if eq .Nav "status"}}class="active"{{end}}>Status</a>
+    {{if .Managed}}<a href="{{.Root}}admin/mailpit" {{if eq .Nav "mailpit"}}class="active"{{end}}>Mailpit</a>{{end}}
     <a href="{{.Root}}admin/settings" {{if eq .Nav "settings"}}class="active"{{end}}>Settings</a>
     <a href="{{.Root}}admin/accounts" {{if eq .Nav "accounts"}}class="active"{{end}}>Accounts</a>
     <a href="{{.Root}}admin/tags" {{if eq .Nav "tags"}}class="active"{{end}}>Tag rules</a>
@@ -31,6 +32,9 @@
   {{end}}
 </header>
 <main>
+  {{if and .Setup (ne .Nav "mailpit")}}
+  <div class="flash error">Mailpit is not set up yet. <a href="{{.Root}}admin/mailpit">Choose a Mailpit version</a> to start it.</div>
+  {{end}}
   {{if and .Pending (ne .Nav "changes")}}
   <div class="flash info">{{.Pending}} file(s) have staged changes. <a href="{{.Root}}admin/changes">Review and apply</a>.</div>
   {{end}}

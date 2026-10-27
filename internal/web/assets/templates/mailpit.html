@@ -1,0 +1,105 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Mailpit</h1>
+
+<div class="grid">
+  <section class="card">
+    <h2>Running version</h2>
+    <dl>
+      <dt>Version</dt><dd>{{if $d.Active}}<strong>{{$d.Active}}</strong>{{else}}<span class="error">none selected</span>{{end}}</dd>
+      <dt>Status</dt><dd>{{if $d.Running}}<span class="ok">running</span>{{else}}<span class="error">stopped</span>{{end}}</dd>
+      {{with $d.Info}}
+      <dt>Uptime</dt><dd>{{uptime .RuntimeStats.Uptime}}</dd>
+      <dt>Messages</dt><dd>{{.Messages}} ({{.Unread}} unread) · {{bytes .DatabaseSize}}</dd>
+      {{end}}
+      {{with $d.LastError}}<dt>Watchdog</dt><dd class="error">{{.}}</dd>{{end}}
+    </dl>
+  </section>
+  <section class="card">
+    <h2>Files</h2>
+    <dl>
+      <dt>Folder</dt><dd><code>{{$d.Layout.Dir}}</code></dd>
+      <dt>Control</dt><dd><code>{{$d.Layout.Ctl}}</code> start | stop | restart | status</dd>
+      <dt>Settings</dt><dd><code>{{$d.Layout.EnvFile}}</code></dd>
+      <dt>Log</dt><dd><code>{{$d.Layout.Log}}</code></dd>
+    </dl>
+  </section>
+</div>
+
+<section class="card">
+  <h2>Releases</h2>
+  <p class="muted">Crew downloads <code>{{$d.Asset}}</code> from the Mailpit GitHub releases into <code>{{$d.Layout.Bin}}</code>. Switching restarts Mailpit; if the new version does not start, Crew goes back to the previous one.</p>
+  {{if $d.ReleaseErr}}<div class="flash error">Could not list releases: {{$d.ReleaseErr}}. Enter a version below instead.</div>{{end}}
+  <table>
+    <thead><tr><th></th><th>Version</th><th>Published</th><th></th></tr></thead>
+    <tbody>
+    {{range $i, $r := $d.Releases}}
+    <tr>
+      <td class="tag-label">{{inc $i}}. {{$r.Label}}</td>
+      <td><strong>{{$r.Tag}}</strong>{{if $r.Active}} <span class="badge">running</span>{{else if $r.Installed}} <span class="badge muted-badge">installed</span>{{end}}</td>
+      <td>{{$r.Published.Format "2006-01-02"}}</td>
+      <td class="row-actions">
+        {{if not $r.Active}}
+        <form method="post" action="{{$.Root}}admin/mailpit/use" class="inline" data-confirm="Switch Mailpit to {{$r.Tag}}? Mailpit restarts.">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
+          <input type="hidden" name="choice" value="{{$r.Tag}}">
+          <button type="submit">{{if $r.Installed}}Use{{else}}Install and use{{end}}</button>
+        </form>
+        {{end}}
+      </td>
+    </tr>
+    {{end}}
+    <tr>
+      <td class="tag-label">4. other</td>
+      <td colspan="3">
+        <form method="post" action="{{.Root}}admin/mailpit/use" class="row">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input name="choice" placeholder="v1.27.0 or /path/to/mailpit" required size="34">
+          <button type="submit" class="secondary">Install and use</button>
+        </form>
+        <span class="muted">A version tag is downloaded. A path is copied into the bin folder.</span>
+      </td>
+    </tr>
+    </tbody>
+  </table>
+</section>
+
+{{if $d.Installed}}
+<section class="card">
+  <h2>Installed</h2>
+  <table>
+    <thead><tr><th>Binary</th><th>Size</th><th></th></tr></thead>
+    <tbody>
+    {{range $d.Installed}}
+    <tr>
+      <td><code>{{.Name}}</code>{{if .Active}} <span class="badge">running</span>{{end}}</td>
+      <td>{{bytes (u64 .Size)}}</td>
+      <td class="row-actions">
+        {{if not .Active}}
+        <form method="post" action="{{$.Root}}admin/mailpit/use" class="inline" data-confirm="Switch Mailpit to {{.Version}}? Mailpit restarts.">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
+          <input type="hidden" name="choice" value="{{.Name}}">
+          <button type="submit" class="secondary">Use</button>
+        </form>
+        <form method="post" action="{{$.Root}}admin/mailpit/remove" class="inline" data-confirm="Delete {{.Name}}?">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
+          <input type="hidden" name="name" value="{{.Name}}">
+          <button type="submit" class="danger">Remove</button>
+        </form>
+        {{end}}
+      </td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}
+
+{{if $d.LogTail}}
+<section class="card">
+  <h2>Recent Mailpit output</h2>
+  <pre class="log">{{range $d.LogTail}}{{.}}
+{{end}}</pre>
+</section>
+{{end}}
+{{end}}

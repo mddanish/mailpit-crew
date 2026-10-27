@@ -2,43 +2,49 @@
 # Every setting can also be given as a flag (--listen) or an env var (MPC_LISTEN).
 # Priority: flags > env vars > this file > defaults.
 
+# managed (default): Crew downloads, configures and runs Mailpit itself.
+# external: Crew manages a Mailpit that you install and run separately.
+mode: managed
+
+# Crew home. Managed mode creates:
+#   <home>/data/      Crew users, state, backups, audit log
+#   <home>/mailpit/   ctl.sh, bin/, mailpit.ini, *.auth, tags.yaml, mailpit.db, mailpit.log
+home: /opt/mailpit-crew
+
 # Crew web UI
 listen: "[::]:8025"
 # webroot: /
 tls:
-  cert: /opt/mailpit/ssl/mail.example.com.fullchain.pem
-  key: /opt/mailpit/ssl/mail.example.com.key.pem
-
-# Crew state: users.yaml, backups/, audit.log
-data_dir: /opt/mailpit-crew/data
+  cert: /opt/mailpit-crew/mailpit/ssl/mail.example.com.fullchain.pem
+  key: /opt/mailpit-crew/mailpit/ssl/mail.example.com.key.pem
 # log_file: /opt/mailpit-crew/crew.log
 # log_level: info
 
-mailpit:
-  # Mailpit API, bound to localhost only (MP_UI_BIND_ADDR=127.0.0.1:8026)
-  api_url: http://127.0.0.1:8026
-  # service account that Crew uses; must be in Mailpit's MP_UI_AUTH_FILE
-  api_user: crew
-  api_password: "change-me"
-  # Mailpit env file (systemd EnvironmentFile)
-  env_file: /opt/mailpit/mailpit.ini
-  # Crew only writes files inside these directories (default: env file directory)
-  # managed_dirs: [/opt/mailpit]
-
-restart:
-  # command: run a command to restart Mailpit (systemd, docker, script)
-  # child:   Crew starts and supervises Mailpit itself
-  mode: command
-  command: ["systemctl", "restart", "mailpit"]
-  timeout: 30s
-
-# child mode only
-# child:
-#   binary: /opt/mailpit/mailpit
-#   args: []
+managed:
+  # Mailpit to install on first start when none is selected:
+  # "latest", a tag such as v1.28.0, or the path to a Mailpit binary.
+  # Leave empty to choose in the terminal prompt or the web UI.
+  version: latest
+  # local address of the Mailpit API (Crew talks to it, users never do)
+  api_listen: 127.0.0.1:8026
 
 backups:
   keep: 20
 
 session:
   ttl: 12h
+
+# ---------------------------------------------------------------------------
+# mode: external only
+# mailpit:
+#   api_url: http://127.0.0.1:8026
+#   api_user: crew
+#   api_password: "change-me"
+#   env_file: /opt/mailpit/mailpit.ini
+#   managed_dirs: [/opt/mailpit]
+# restart:
+#   mode: command          # or child
+#   command: ["systemctl", "restart", "mailpit"]
+#   timeout: 30s
+# child:
+#   binary: /opt/mailpit/mailpit

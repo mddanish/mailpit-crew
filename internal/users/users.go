@@ -175,6 +175,25 @@ func (s *Store) Add(username, password, role string) error {
 	return s.saveLocked()
 }
 
+// AddHash adds a user with an existing bcrypt hash (for imports).
+func (s *Store) AddHash(username, hash, role string) error {
+	if err := htpasswd.ValidUsername(username); err != nil {
+		return err
+	}
+	if htpasswd.HashType(hash) != "bcrypt" {
+		return errors.New("only bcrypt hashes can be imported")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, u := range s.users {
+		if u.Username == username {
+			return fmt.Errorf("user %q already exists", username)
+		}
+	}
+	s.users = append(s.users, User{Username: username, Password: hash, Role: role})
+	return s.saveLocked()
+}
+
 // Bootstrap creates an "admin" user with a random password when the store
 // is empty. It returns the password, or "" when nothing was created.
 func (s *Store) Bootstrap() (string, error) {

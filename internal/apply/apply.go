@@ -71,7 +71,10 @@ type Options struct {
 	Timeout     time.Duration
 	StableFor   time.Duration // Mailpit must stay up this long after a restart (default 5s)
 	ServiceUser string        // Crew's Mailpit API account, must stay in the UI auth file
-	Log         *slog.Logger
+	// Locked env keys and their required values ("" = must not be set).
+	// Used in managed mode for settings Crew depends on.
+	Locked map[string]string
+	Log    *slog.Logger
 }
 
 type staged struct {
@@ -403,8 +406,18 @@ func (m *Manager) validateLocked() []string {
 			_, ok := m.staged[filepath.Clean(p)]
 			return ok
 		}
-		for _, e := range catalog.ValidateEnvWith(ef.Map(), pending) {
+		env := ef.Map()
+		for _, e := range catalog.ValidateEnvWith(env, pending) {
 			errs = append(errs, "Mailpit settings: "+e.Error())
+		}
+		for _, k := range sortedKeys(m.opts.Locked) {
+			if want := m.opts.Locked[k]; !lockedEqual(env[k], want) {
+				if want == "" {
+					errs = append(errs, fmt.Sprintf("Mailpit settings: %s is managed by Crew and must not be set", k))
+				} else {
+					errs = append(errs, fmt.Sprintf("Mailpit settings: %s is managed by Crew and must be %s", k, want))
+				}
+			}
 		}
 	}
 	for _, f := range m.filesLocked() {
@@ -441,6 +454,73 @@ func (m *Manager) validateLocked() []string {
 	}
 	return errs
 }
+
+// Locked returns the locked env keys.
+func (m *Manager) Locked() map[string]string { return m.opts.Locked }
+
+func lockedEqual(have, want string) bool {
+	if want == "true" {
+		return catalog.IsTrue(have)
+	}
+	return have == want
+}
+
+func sortedKeys(m map[string]string) []string {
+	var out []string
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// RepairLocked sets locked values in the env file on disk. It returns the
+// keys it changed. Used at startup, before Mailpit runs.
+func (m *Manager) RepairLocked() ([]string, error) {
+	if len(m.opts.Locked) == 0 || m.opts.EnvFile == "" {
+		return nil, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	data, err := os.ReadFile(m.opts.EnvFile)
+	if err != nil {
+		return nil, err
+	}
+	ef := envfile.Parse(data)
+	var changed []string
+	for _, k := range sortedKeys(m.opts.Locked) {
+		want := m.opts.Locked[k]
+		have, _ := ef.Get(k)
+		if lockedEqual(have, want) {
+			continue
+		}
+		if want == "" {
+			ef.Delete(k)
+		} else if err := ef.Set(k, want); err != nil {
+			return nil, err
+		}
+		changed = append(changed, k)
+	}
+	if len(changed) == 0 {
+		return nil, nil
+	}
+	return changed, fsutil.WriteAtomic(m.opts.EnvFile, ef.Bytes(), 0o644)
+}
+
+// Exclusive runs fn while no apply can run. It fails when one is running.
+func (m *Manager) Exclusive(fn func() error) error {
+	if !m.applying.TryLock() {
+		return errors.New("another apply is running")
+	}
+	defer m.applying.Unlock()
+	return fn()
+}
+
+// RestartAndWait restarts Mailpit and waits until it is ready and stable.
+func (m *Manager) RestartAndWait(ctx context.Context) error { return m.restartAndWait(ctx) }
+
+// LogTail returns recent Mailpit output.
+func (m *Manager) LogTail() []string { return m.logTail() }
 
 func contains(l []string, s string) bool {
 	for _, x := range l {

@@ -149,3 +149,5 @@ pre.diff .da { background: var(--add-bg); }
 pre.diff .dr { background: var(--rem-bg); }
 pre.diff .ds { color: var(--muted); }
 pre.diff { white-space: normal; }
+.muted-badge { background: var(--code-bg); color: var(--muted); }
+.tag-label { font-size: 12px; color: var(--muted); }

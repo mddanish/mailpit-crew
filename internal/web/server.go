@@ -17,6 +17,7 @@ import (
 	"github.com/mddanish/mailpit-crew/internal/audit"
 	"github.com/mddanish/mailpit-crew/internal/catalog"
 	"github.com/mddanish/mailpit-crew/internal/mailpit"
+	"github.com/mddanish/mailpit-crew/internal/managed"
 	"github.com/mddanish/mailpit-crew/internal/users"
 )
 
@@ -36,6 +37,7 @@ type Options struct {
 	Users        *users.Store
 	Manager      *apply.Manager
 	Mailpit      *mailpit.Client
+	Managed      *managed.Service // nil in external mode
 	Audit        *audit.Log
 	Log          *slog.Logger
 }
@@ -73,6 +75,7 @@ var funcs = template.FuncMap{
 	},
 	"bytes":  humanBytes,
 	"istrue": catalog.IsTrue,
+	"u64":    func(n int64) uint64 { return uint64(n) },
 }
 
 func (s *Server) parseTemplates() error {
@@ -119,6 +122,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /admin/tags", s.admin(s.tagsPage))
 	s.mux.HandleFunc("POST /admin/tags", s.admin(s.tagsSubmit))
 	s.mux.HandleFunc("GET /admin/tags/test", s.admin(s.tagsTest))
+	s.mux.HandleFunc("POST /admin/accounts/enable", s.admin(s.accountsEnable))
+	s.mux.HandleFunc("GET /admin/mailpit", s.admin(s.mailpitPage))
+	s.mux.HandleFunc("POST /admin/mailpit/use", s.admin(s.mailpitUse))
+	s.mux.HandleFunc("POST /admin/mailpit/remove", s.admin(s.mailpitRemove))
 	s.mux.HandleFunc("GET /admin/changes", s.admin(s.changesPage))
 	s.mux.HandleFunc("POST /admin/changes/discard", s.admin(s.discard))
 	s.mux.HandleFunc("POST /admin/apply", s.admin(s.applySubmit))
@@ -214,6 +221,8 @@ type pageData struct {
 	CSRF    string
 	Flashes []flash
 	Pending int
+	Managed bool
+	Setup   bool // managed mode, no Mailpit version selected
 	Data    any
 }
 
@@ -231,6 +240,10 @@ func (s *Server) render(w http.ResponseWriter, c *reqCtx, name, title, nav strin
 		pd.Flashes = s.sessions.takeFlashes(c.sess)
 		if u.IsAdmin() {
 			pd.Pending = s.opts.Manager.PendingCount()
+		}
+		if s.opts.Managed != nil {
+			pd.Managed = true
+			pd.Setup = !s.opts.Managed.HasBinary()
 		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
